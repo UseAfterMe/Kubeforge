@@ -298,6 +298,7 @@ If you want a smoother day-to-day operator experience, these are the most useful
 - `kubectx` for fast context switching between clusters
 - `k9s` for terminal-based Kubernetes inspection
 - `pvecsictl` for manual local Proxmox CSI volume moves between Proxmox nodes
+  - `pvecsictl` requires Go when installed with `go install`
 
 On macOS:
 
@@ -305,6 +306,16 @@ On macOS:
 brew install --cask freelens
 brew install kubectx
 brew install k9s
+GOBIN="$HOME/.local/bin" go install github.com/sergelogvinov/proxmox-csi-plugin/cmd/pvecsictl@latest
+```
+
+On Linux:
+
+- install `kubectx` and `k9s` from your distro package manager when available
+- install `Freelens` from the official DEB, RPM, Flatpak, or Snap packages
+- install `pvecsictl` with Go:
+
+```bash
 GOBIN="$HOME/.local/bin" go install github.com/sergelogvinov/proxmox-csi-plugin/cmd/pvecsictl@latest
 ```
 
