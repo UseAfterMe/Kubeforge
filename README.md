@@ -253,13 +253,9 @@ The deployer can create that automatically if Proxmox SSH access has been set up
 
 The guest package alone is not enough. The Proxmox VM option must also enable the QEMU guest agent device. If you changed that option on an existing VM, a full stop/start may be required.
 
-### Rocky cloud-init shows `cloud-final` failure
-
-This was previously caused by trying to enable `ssh` instead of `sshd`. Current templates handle Rocky correctly, but older VMs may still carry the bad first-boot result until rebuilt.
-
 ### Rocky package installs hang or fail
 
-The deployer now writes explicit DNS configuration and bounds package-manager timeouts, but mirror issues can still happen. Re-running `bootstrap` after connectivity stabilizes is usually enough.
+The deployer writes explicit DNS configuration and bounds package-manager timeouts, but mirror issues can still happen. Re-running `bootstrap` after connectivity stabilizes is usually enough.
 
 ### MetalLB address pool validation fails
 
@@ -285,11 +281,9 @@ The deployer installs Proxmox CSI using the upstream Helm chart flow and creates
 
 For local Proxmox storage like `lvm`, `lvm-thin`, `zfs`, `ext4`, or `xfs`, cross-node PV moves are still a manual workflow. The upstream project documents `pvecsictl` for those offline PV migrations.
 
-### Re-running `bootstrap` after a partial cluster bring-up
+### Re-running `bootstrap`
 
-The playbook includes cleanup for partial kubeadm state on the bootstrap control plane, but stale rendered outputs or half-written manifests can still cause confusing results if `apply` has not been rerun after config changes.
-
-When in doubt:
+If you changed configuration and want to rerun bootstrap cleanly, refresh the rendered outputs first:
 
 ```bash
 ./deploy.sh apply
