@@ -1,0 +1,12 @@
+kubeProxyReplacement: false
+ipam:
+  mode: kubernetes
+k8sServiceHost: {{ kubernetes_api_ip }}
+k8sServicePort: 6443
+operator:
+  replicas: {{ 2 if groups['kube_control_plane'] | length > 1 else 1 }}
+hubble:
+  relay:
+    enabled: true
+  ui:
+    enabled: true

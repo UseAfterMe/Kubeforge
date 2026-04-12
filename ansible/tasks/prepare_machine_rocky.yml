@@ -1,0 +1,197 @@
+---
+
+- name: Install base packages
+  ansible.builtin.shell: >-
+    timeout 240 dnf -y install
+    ca-certificates
+    curl
+    dnf-plugins-core
+    iproute-tc
+    iscsi-initiator-utils
+    jq
+    nfs-utils
+    policycoreutils-python-utils
+    tar
+  args:
+    executable: /bin/bash
+  register: base_packages_result
+  changed_when: "'Nothing to do.' not in base_packages_result.stdout"
+
+- name: Configure Docker CE repository for containerd.io
+  ansible.builtin.copy:
+    dest: /etc/yum.repos.d/docker-ce.repo
+    mode: "0644"
+    content: |
+      [docker-ce-stable]
+      name=Docker CE Stable - $basearch
+      baseurl=https://download.docker.com/linux/centos/$releasever/$basearch/stable
+      enabled=1
+      gpgcheck=1
+      gpgkey=https://download.docker.com/linux/centos/gpg
+
+- name: Install containerd.io
+  ansible.builtin.shell: timeout 240 dnf -y install containerd.io
+  args:
+    executable: /bin/bash
+  register: containerd_package_result
+  changed_when: "'Nothing to do.' not in containerd_package_result.stdout"
+
+- name: Disable swap immediately
+  ansible.builtin.command: swapoff -a
+  changed_when: false
+  failed_when: false
+
+- name: Disable swap in fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(?!#)(.*\sswap\s+.*)$'
+    replace: '# \1'
+
+- name: Disable SELinux immediately
+  ansible.builtin.command: setenforce 0
+  changed_when: false
+  failed_when: false
+
+- name: Disable SELinux persistently
+  ansible.builtin.replace:
+    path: /etc/selinux/config
+    regexp: '^SELINUX=.*$'
+    replace: 'SELINUX=permissive'
+
+- name: Load kernel modules config
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/kubernetes.conf
+    mode: "0644"
+    content: |
+      overlay
+      br_netfilter
+
+- name: Load overlay module
+  ansible.builtin.command: modprobe overlay
+  changed_when: false
+
+- name: Load br_netfilter module
+  ansible.builtin.command: modprobe br_netfilter
+  changed_when: false
+
+- name: Install sysctl settings
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-kubernetes.conf
+    mode: "0644"
+    content: |
+      net.bridge.bridge-nf-call-iptables = 1
+      net.bridge.bridge-nf-call-ip6tables = 0
+      net.ipv4.ip_forward = 1
+      net.ipv6.conf.all.disable_ipv6 = 1
+      net.ipv6.conf.default.disable_ipv6 = 1
+      net.ipv6.conf.eth0.disable_ipv6 = 1
+
+- name: Apply sysctl settings
+  ansible.builtin.command: sysctl --system
+  changed_when: false
+
+- name: Ensure containerd config directory exists
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: Seed containerd config
+  ansible.builtin.shell: containerd config default >/etc/containerd/config.toml
+  args:
+    creates: /etc/containerd/config.toml
+
+- name: Enable systemd cgroup driver for containerd
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+  notify: Restart containerd
+
+- name: Ensure CRI plugin is enabled for containerd on Rocky
+  ansible.builtin.lineinfile:
+    path: /etc/containerd/config.toml
+    regexp: '^\s*disabled_plugins\s*='
+    state: absent
+  notify: Restart containerd
+
+- name: Ensure containerd is restarted after Rocky config changes
+  ansible.builtin.service:
+    name: containerd
+    state: restarted
+
+- name: Ensure kubelet extra args directory exists
+  ansible.builtin.file:
+    path: /etc/sysconfig
+    state: directory
+    mode: "0755"
+
+- name: Configure kubelet defaults
+  ansible.builtin.template:
+    src: kubelet-defaults.conf.j2
+    dest: /etc/sysconfig/kubelet
+    mode: "0644"
+
+- name: Configure Kubernetes yum repository
+  ansible.builtin.copy:
+    dest: /etc/yum.repos.d/kubernetes.repo
+    mode: "0644"
+    content: |
+      [kubernetes]
+      name=Kubernetes
+      baseurl=https://pkgs.k8s.io/core:/stable:/v{{ kube_version_minor }}/rpm/
+      enabled=1
+      gpgcheck=1
+      repo_gpgcheck=1
+      gpgkey=https://pkgs.k8s.io/core:/stable:/v{{ kube_version_minor }}/rpm/repodata/repomd.xml.key
+      exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+
+- name: Install Kubernetes packages
+  ansible.builtin.dnf:
+    name:
+      - kubeadm
+      - kubelet
+      - kubectl
+    state: present
+    disable_excludes: kubernetes
+    update_cache: true
+  register: kube_packages_result
+  retries: 3
+  delay: 15
+  until: kube_packages_result is succeeded
+
+- name: Install versionlock plugin
+  ansible.builtin.dnf:
+    name: python3-dnf-plugin-versionlock
+    state: present
+
+- name: Hold Kubernetes packages
+  ansible.builtin.command: dnf versionlock add kubeadm kubelet kubectl
+  changed_when: false
+
+- name: Ensure container runtime and storage services are enabled
+  ansible.builtin.service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - containerd
+    - iscsid
+
+- name: Ensure kubelet is enabled
+  ansible.builtin.service:
+    name: kubelet
+    enabled: true
+
+- name: Install Cockpit on Rocky when requested
+  ansible.builtin.dnf:
+    name: cockpit
+    state: present
+  when: enable_rocky_cockpit | bool
+
+- name: Ensure Cockpit socket is enabled on Rocky when requested
+  ansible.builtin.service:
+    name: cockpit.socket
+    enabled: true
+    state: started
+  when: enable_rocky_cockpit | bool

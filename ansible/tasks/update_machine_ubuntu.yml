@@ -1,0 +1,58 @@
+---
+- name: Configure apt for reliable IPv4 package fetches
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/99kubeadm-deployer-network
+    mode: "0644"
+    content: |
+      Acquire::ForceIPv4 "true";
+      Acquire::Retries "5";
+      Acquire::http::Timeout "20";
+      Acquire::https::Timeout "20";
+
+- name: Update Ubuntu system packages before Kubernetes prep
+  block:
+    - name: Run Ubuntu system update
+      ansible.builtin.shell: |
+        set -o pipefail
+        log_file=/var/log/kubeadm-deployer-ubuntu-update.log
+        : > "${log_file}"
+        timeout 180 apt-get update >> "${log_file}" 2>&1
+        timeout 180 env DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade >> "${log_file}" 2>&1
+        if grep -q "0 upgraded, 0 newly installed, 0 to remove" "${log_file}"; then
+          echo unchanged
+        else
+          echo changed
+        fi
+      args:
+        executable: /bin/bash
+      register: ubuntu_upgrade_result
+      changed_when: "'changed' in ubuntu_upgrade_result.stdout"
+  rescue:
+    - name: Read Ubuntu update log tail
+      ansible.builtin.shell: tail -n 20 /var/log/kubeadm-deployer-ubuntu-update.log
+      args:
+        executable: /bin/bash
+      register: ubuntu_update_log_tail
+      changed_when: false
+      failed_when: false
+
+    - name: Warn about Ubuntu update failure and continue
+      ansible.builtin.debug:
+        msg: >-
+          Ubuntu package update failed after retries and will be skipped for this run.
+          Review /var/log/kubeadm-deployer-ubuntu-update.log on the guest for full details.
+          Recent output:
+          {{ ubuntu_update_log_tail.stdout | default('no log output captured') }}
+
+    - name: Mark Ubuntu update as skipped
+      ansible.builtin.set_fact:
+        ubuntu_upgrade_result:
+          changed: false
+
+- name: Reboot Ubuntu after package updates when needed
+  ansible.builtin.reboot:
+    reboot_timeout: 1800
+    connect_timeout: 10
+    post_reboot_delay: 10
+    msg: Rebooting after Ubuntu system updates before Kubernetes installation
+  when: ubuntu_upgrade_result.changed

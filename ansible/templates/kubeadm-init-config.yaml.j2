@@ -1,0 +1,29 @@
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: "{{ node_ip }}"
+  bindPort: 6443
+nodeRegistration:
+  criSocket: "unix:///run/containerd/containerd.sock"
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: "{{ cluster_name }}"
+kubernetesVersion: "v{{ kubernetes_version }}"
+controlPlaneEndpoint: "{{ kubernetes_api_ip }}:6443"
+networking:
+  podSubnet: "{{ pod_cidr }}"
+  serviceSubnet: "{{ service_cidr }}"
+apiServer:
+  certSANs:
+    - "{{ kubernetes_api_ip }}"
+    - "{{ first_control_plane_ip }}"
+    - "{{ first_control_plane_name }}"
+{% if first_control_plane_dns | default('', true) | length > 0 %}
+    - "{{ first_control_plane_dns }}"
+{% endif %}
+{% if kubernetes_api_dns | default('', true) | length > 0 %}
+    - "{{ kubernetes_api_dns }}"
+{% endif %}
+controllerManager: {}
+scheduler: {}

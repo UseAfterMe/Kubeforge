@@ -1,0 +1,10 @@
+.ansible/
+.terraform/
+out/
+terraform.tfvars.json
+*.retry
+*.tfstate
+*.tfstate.backup
+.DS_Store
+__pycache__/
+*.pyc

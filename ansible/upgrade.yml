@@ -1,0 +1,125 @@
+---
+- name: Upgrade Kubernetes packages and addons
+  hosts: kube_cluster
+  become: true
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Unhold Kubernetes packages on Ubuntu
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: install
+      loop:
+        - kubeadm
+        - kubelet
+        - kubectl
+      when: os_family == "ubuntu"
+
+    - name: Install target Kubernetes packages on Ubuntu
+      ansible.builtin.apt:
+        name:
+          - "kubeadm={{ kube_package_version }}"
+          - "kubelet={{ kube_package_version }}"
+          - "kubectl={{ kube_package_version }}"
+        state: present
+        update_cache: true
+        allow_downgrade: true
+      when: os_family == "ubuntu"
+
+    - name: Hold Kubernetes packages again on Ubuntu
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubeadm
+        - kubelet
+        - kubectl
+      when: os_family == "ubuntu"
+
+    - name: Remove Kubernetes versionlock on Rocky
+      ansible.builtin.command: dnf versionlock delete kubeadm kubelet kubectl
+      changed_when: false
+      failed_when: false
+      when: os_family == "rocky"
+
+    - name: Install target Kubernetes packages on Rocky
+      ansible.builtin.dnf:
+        name:
+          - "kubeadm-{{ kube_package_version }}"
+          - "kubelet-{{ kube_package_version }}"
+          - "kubectl-{{ kube_package_version }}"
+        state: present
+        disable_excludes: kubernetes
+        update_cache: true
+      when: os_family == "rocky"
+
+    - name: Hold Kubernetes packages again on Rocky
+      ansible.builtin.command: dnf versionlock add kubeadm kubelet kubectl
+      changed_when: false
+      when: os_family == "rocky"
+
+- name: Upgrade bootstrap control plane
+  hosts: bootstrap_control_plane
+  become: true
+  gather_facts: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  tasks:
+    - name: Upgrade kubeadm
+      ansible.builtin.command: "kubeadm upgrade apply -y v{{ kubernetes_version }}"
+
+    - name: Restart kubelet
+      ansible.builtin.service:
+        name: kubelet
+        state: restarted
+
+    - name: Upgrade Cilium
+      ansible.builtin.command: >-
+        helm upgrade --install cilium cilium/cilium
+        --namespace kube-system
+        --version {{ cilium_chart_version }}
+        --values /root/cilium-values.yaml
+
+    - name: Upgrade MetalLB
+      ansible.builtin.command: >-
+        helm upgrade --install metallb metallb/metallb
+        --namespace metallb-system
+        --version {{ metallb_chart_version }}
+
+    - name: Upgrade Traefik
+      ansible.builtin.command: >-
+        helm upgrade --install traefik traefik/traefik
+        --namespace traefik
+        --version {{ traefik_chart_version }}
+        --values /root/traefik-values.yaml
+
+    - name: Render Proxmox CSI Helm values
+      ansible.builtin.template:
+        src: proxmox-csi-values.yaml.j2
+        dest: /root/proxmox-csi-values.yaml
+        mode: "0600"
+      when: install_proxmox_csi | bool
+
+    - name: Upgrade Proxmox CSI from upstream Helm chart
+      ansible.builtin.command: >-
+        /usr/local/bin/helm upgrade --install proxmox-csi-plugin
+        oci://ghcr.io/sergelogvinov/charts/proxmox-csi-plugin
+        --namespace csi-proxmox
+        --create-namespace
+        --version {{ proxmox_csi_chart_version }}
+        --values /root/proxmox-csi-values.yaml
+      when: install_proxmox_csi | bool
+
+- name: Upgrade remaining nodes
+  hosts: "kube_control_plane:!bootstrap_control_plane:kube_workers"
+  become: true
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Upgrade node
+      ansible.builtin.command: kubeadm upgrade node
+
+    - name: Restart kubelet
+      ansible.builtin.service:
+        name: kubelet
+        state: restarted

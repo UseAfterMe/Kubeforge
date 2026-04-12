@@ -1,0 +1,1 @@
+KUBELET_EXTRA_ARGS=--node-ip={{ node_ip }} --provider-id=proxmox://{{ proxmox_region }}/{{ vm_id }} --node-labels=topology.kubernetes.io/region={{ proxmox_region }},topology.kubernetes.io/zone={{ proxmox_node }},topology.proxmox.sinextra.dev/region={{ proxmox_region }},topology.proxmox.sinextra.dev/node={{ proxmox_node }}

@@ -1,0 +1,10 @@
+existingConfigSecret: proxmox-csi-plugin
+existingConfigSecretKey: config.yaml
+
+storageClass:
+  - name: proxmox
+    storage: "{{ proxmox_csi_storage }}"
+    reclaimPolicy: Delete
+    fstype: ext4
+    cache: writethrough
+    ssd: true

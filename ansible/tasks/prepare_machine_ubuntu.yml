@@ -1,0 +1,165 @@
+---
+
+- name: Install base packages
+  ansible.builtin.shell: >-
+    timeout 240 env DEBIAN_FRONTEND=noninteractive
+    apt-get install -y
+    apt-transport-https
+    ca-certificates
+    containerd
+    curl
+    gpg
+    jq
+    nfs-common
+    open-iscsi
+    software-properties-common
+    tar
+  args:
+    executable: /bin/bash
+  register: base_packages_result
+  changed_when: "'0 upgraded, 0 newly installed, 0 to remove' not in base_packages_result.stdout"
+
+- name: Disable swap immediately
+  ansible.builtin.command: swapoff -a
+  changed_when: false
+  failed_when: false
+
+- name: Disable swap in fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(?!#)(.*\sswap\s+.*)$'
+    replace: '# \1'
+
+- name: Load kernel modules config
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/kubernetes.conf
+    mode: "0644"
+    content: |
+      overlay
+      br_netfilter
+
+- name: Load overlay module
+  ansible.builtin.command: modprobe overlay
+  changed_when: false
+
+- name: Load br_netfilter module
+  ansible.builtin.command: modprobe br_netfilter
+  changed_when: false
+
+- name: Install sysctl settings
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-kubernetes.conf
+    mode: "0644"
+    content: |
+      net.bridge.bridge-nf-call-iptables = 1
+      net.bridge.bridge-nf-call-ip6tables = 0
+      net.ipv4.ip_forward = 1
+      net.ipv6.conf.all.disable_ipv6 = 1
+      net.ipv6.conf.default.disable_ipv6 = 1
+      net.ipv6.conf.eth0.disable_ipv6 = 1
+
+- name: Apply sysctl settings
+  ansible.builtin.command: sysctl --system
+  changed_when: false
+
+- name: Ensure containerd config directory exists
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: Seed containerd config
+  ansible.builtin.shell: containerd config default >/etc/containerd/config.toml
+  args:
+    creates: /etc/containerd/config.toml
+
+- name: Enable systemd cgroup driver for containerd
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+  notify: Restart containerd
+
+- name: Ensure kubelet extra args directory exists
+  ansible.builtin.file:
+    path: /etc/default
+    state: directory
+    mode: "0755"
+
+- name: Configure kubelet defaults
+  ansible.builtin.template:
+    src: kubelet-defaults.conf.j2
+    dest: /etc/default/kubelet
+    mode: "0644"
+
+- name: Ensure apt keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Install Kubernetes apt key
+  ansible.builtin.command:
+    argv:
+      - curl
+      - --fail
+      - --silent
+      - --show-error
+      - --location
+      - --ipv4
+      - --retry
+      - "5"
+      - --retry-delay
+      - "3"
+      - --connect-timeout
+      - "10"
+      - --output
+      - /etc/apt/keyrings/kubernetes-apt-keyring.asc
+      - "https://pkgs.k8s.io/core:/stable:/v{{ kube_version_minor }}/deb/Release.key"
+  register: kube_key_result
+  retries: 3
+  delay: 5
+  until: kube_key_result is succeeded
+
+- name: Configure Kubernetes apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v{{ kube_version_minor }}/deb/ /"
+    filename: kubernetes
+    state: present
+
+- name: Install Kubernetes packages
+  ansible.builtin.apt:
+    name:
+      - "kubeadm={{ kube_package_version }}"
+      - "kubelet={{ kube_package_version }}"
+      - "kubectl={{ kube_package_version }}"
+    state: present
+    update_cache: true
+    allow_downgrade: true
+  register: kube_packages_result
+  retries: 3
+  delay: 15
+  until: kube_packages_result is succeeded
+
+- name: Hold Kubernetes packages
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubeadm
+    - kubelet
+    - kubectl
+
+- name: Ensure container runtime and storage services are enabled
+  ansible.builtin.service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - containerd
+    - open-iscsi
+
+- name: Ensure kubelet is enabled
+  ansible.builtin.service:
+    name: kubelet
+    enabled: true

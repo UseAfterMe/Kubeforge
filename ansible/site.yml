@@ -1,0 +1,504 @@
+---
+- name: Update all machines before Kubernetes prep
+  hosts: all
+  become: true
+  gather_facts: false
+  strategy: free
+  tasks:
+    - name: Run Ubuntu node update
+      ansible.builtin.import_tasks: tasks/update_machine_ubuntu.yml
+      when: os_family == "ubuntu"
+
+    - name: Run Rocky node update
+      ansible.builtin.import_tasks: tasks/update_machine_rocky.yml
+      when: os_family == "rocky"
+
+- name: Prepare control planes
+  hosts: kube_control_plane
+  become: true
+  gather_facts: false
+  strategy: free
+  tasks:
+    - name: Run Ubuntu node preparation
+      ansible.builtin.import_tasks: tasks/prepare_machine_ubuntu.yml
+      when: os_family == "ubuntu"
+
+    - name: Run Rocky node preparation
+      ansible.builtin.import_tasks: tasks/prepare_machine_rocky.yml
+      when: os_family == "rocky"
+
+  handlers:
+    - name: Restart containerd
+      ansible.builtin.service:
+        name: containerd
+        state: restarted
+
+- name: Prepare workers and haproxy
+  hosts: "haproxy:kube_workers"
+  become: true
+  gather_facts: false
+  strategy: free
+  tasks:
+    - name: Run Ubuntu node preparation
+      ansible.builtin.import_tasks: tasks/prepare_machine_ubuntu.yml
+      when: os_family == "ubuntu"
+
+    - name: Run Rocky node preparation
+      ansible.builtin.import_tasks: tasks/prepare_machine_rocky.yml
+      when: os_family == "rocky"
+
+  handlers:
+    - name: Restart containerd
+      ansible.builtin.service:
+        name: containerd
+        state: restarted
+
+- name: Install HAProxy for multi-control-plane API access
+  hosts: haproxy
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Install haproxy
+      ansible.builtin.package:
+        name: haproxy
+        state: present
+
+    - name: Configure haproxy
+      ansible.builtin.template:
+        src: haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+        mode: "0644"
+      notify: Restart haproxy
+
+    - name: Ensure haproxy is enabled
+      ansible.builtin.service:
+        name: haproxy
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Restart haproxy
+      ansible.builtin.service:
+        name: haproxy
+        state: restarted
+
+- name: Bootstrap first control plane
+  hosts: bootstrap_control_plane
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Render kubeadm init config
+      ansible.builtin.template:
+        src: kubeadm-init-config.yaml.j2
+        dest: /root/kubeadm-init.yaml
+        mode: "0600"
+
+    - name: Check whether cluster is already initialized
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: admin_conf_stat
+
+    - name: Check for stale kube-apiserver manifest from a partial init
+      ansible.builtin.stat:
+        path: /etc/kubernetes/manifests/kube-apiserver.yaml
+      register: stale_apiserver_manifest_stat
+
+    - name: Check for stale etcd data from a partial init
+      ansible.builtin.stat:
+        path: /var/lib/etcd
+      register: stale_etcd_dir_stat
+
+    - name: Reset partial bootstrap control plane state before re-running kubeadm init
+      ansible.builtin.command: kubeadm reset -f
+      when:
+        - not admin_conf_stat.stat.exists
+        - stale_apiserver_manifest_stat.stat.exists or stale_etcd_dir_stat.stat.exists
+
+    - name: Remove stale Kubernetes manifest directory after reset
+      ansible.builtin.file:
+        path: /etc/kubernetes/manifests
+        state: absent
+      when:
+        - not admin_conf_stat.stat.exists
+        - stale_apiserver_manifest_stat.stat.exists
+
+    - name: Remove stale etcd data directory after reset
+      ansible.builtin.file:
+        path: /var/lib/etcd
+        state: absent
+      when:
+        - not admin_conf_stat.stat.exists
+        - stale_etcd_dir_stat.stat.exists
+
+    - name: Initialize Kubernetes control plane
+      ansible.builtin.command: kubeadm init --config /root/kubeadm-init.yaml
+      when: not admin_conf_stat.stat.exists
+
+    - name: Wait for local Kubernetes API on bootstrap control plane
+      ansible.builtin.wait_for:
+        host: "{{ first_control_plane_ip }}"
+        port: 6443
+        delay: 5
+        timeout: 300
+      when: not admin_conf_stat.stat.exists
+
+    - name: Wait for configured Kubernetes API endpoint
+      ansible.builtin.wait_for:
+        host: "{{ kubernetes_api_ip }}"
+        port: 6443
+        delay: 5
+        timeout: 300
+      when: not admin_conf_stat.stat.exists
+
+    - name: Ensure kube config directory exists for bootstrap user
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0700"
+
+    - name: Copy admin kubeconfig to bootstrap user
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "/home/{{ ansible_user }}/.kube/config"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+        remote_src: true
+
+    - name: Install Helm binary
+      ansible.builtin.shell: |
+        set -euo pipefail
+        version="v3.20.1"
+        arch="$(uname -m)"
+        case "${arch}" in
+          x86_64) helm_arch="amd64" ;;
+          aarch64|arm64) helm_arch="arm64" ;;
+          *)
+            echo "Unsupported Helm architecture: ${arch}" >&2
+            exit 1
+            ;;
+        esac
+        tmpdir="$(mktemp -d)"
+        trap 'rm -rf "${tmpdir}"' EXIT
+        curl -fsSL "https://get.helm.sh/helm-${version}-linux-${helm_arch}.tar.gz" -o "${tmpdir}/helm.tgz"
+        tar -xzf "${tmpdir}/helm.tgz" -C "${tmpdir}"
+        install -m 0755 "${tmpdir}/linux-${helm_arch}/helm" /usr/local/bin/helm
+      args:
+        executable: /bin/bash
+        creates: /usr/local/bin/helm
+
+    - name: Ensure Helm is available in /usr/bin as well
+      ansible.builtin.file:
+        src: /usr/local/bin/helm
+        dest: /usr/bin/helm
+        state: link
+
+    - name: Fetch worker join command
+      ansible.builtin.command: kubeadm token create --ttl 2h --print-join-command
+      register: worker_join_command
+      changed_when: false
+
+    - name: Upload control plane certificates
+      ansible.builtin.command: kubeadm init phase upload-certs --upload-certs
+      register: upload_certs
+      changed_when: false
+      when: groups['kube_control_plane'] | length > 1
+
+    - name: Store control plane certificate key
+      ansible.builtin.set_fact:
+        control_plane_certificate_key: "{{ upload_certs.stdout_lines[-1] }}"
+      when: groups['kube_control_plane'] | length > 1
+
+- name: Join additional control planes
+  hosts: "kube_control_plane:!bootstrap_control_plane"
+  become: true
+  gather_facts: false
+  strategy: free
+  tasks:
+    - name: Check whether node already joined
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf_stat
+
+    - name: Join control plane
+      ansible.builtin.command: >-
+        {{ hostvars[groups['bootstrap_control_plane'][0]].worker_join_command.stdout }}
+        --control-plane
+        --certificate-key {{ hostvars[groups['bootstrap_control_plane'][0]].control_plane_certificate_key }}
+        --apiserver-advertise-address {{ node_ip }}
+      register: join_control_plane_result
+      retries: 5
+      delay: 15
+      until: join_control_plane_result is succeeded
+      when:
+        - not kubelet_conf_stat.stat.exists
+        - groups['kube_control_plane'] | length > 1
+
+- name: Join worker nodes
+  hosts: kube_workers
+  become: true
+  gather_facts: false
+  strategy: free
+  ignore_unreachable: true
+  tasks:
+    - name: Check whether worker already joined
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf_stat
+
+    - name: Join worker
+      ansible.builtin.command: "{{ hostvars[groups['bootstrap_control_plane'][0]].worker_join_command.stdout }}"
+      register: join_worker_result
+      retries: 5
+      delay: 15
+      until: join_worker_result is succeeded
+      when:
+        - kubelet_conf_stat is defined
+        - kubelet_conf_stat.stat is defined
+        - not kubelet_conf_stat.stat.exists
+
+- name: Install cluster addons and fetch kubeconfig
+  hosts: bootstrap_control_plane
+  become: true
+  gather_facts: false
+  tags:
+    - addons
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  tasks:
+    - name: Render Cilium values
+      ansible.builtin.template:
+        src: cilium-values.yaml.j2
+        dest: /root/cilium-values.yaml
+        mode: "0600"
+
+    - name: Render MetalLB address pool manifest
+      ansible.builtin.template:
+        src: metallb-pool.yaml.j2
+        dest: /root/metallb-pool.yaml
+        mode: "0600"
+
+    - name: Render Traefik values
+      ansible.builtin.template:
+        src: traefik-values.yaml.j2
+        dest: /root/traefik-values.yaml
+        mode: "0600"
+
+    - name: Render Proxmox CSI secret
+      ansible.builtin.template:
+        src: proxmox-csi-secret.yaml.j2
+        dest: /root/proxmox-csi-secret.yaml
+        mode: "0600"
+      when: install_proxmox_csi | bool
+
+    - name: Add Helm repositories
+      ansible.builtin.shell: |
+        set -euo pipefail
+        /usr/local/bin/helm repo add cilium https://helm.cilium.io
+        /usr/local/bin/helm repo add metallb https://metallb.github.io/metallb
+        /usr/local/bin/helm repo add traefik https://traefik.github.io/charts
+        /usr/local/bin/helm repo update
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Install Cilium
+      ansible.builtin.command: >-
+        /usr/local/bin/helm upgrade --install cilium cilium/cilium
+        --namespace kube-system
+        --version {{ cilium_chart_version }}
+        --values /root/cilium-values.yaml
+
+    - name: Wait for Cilium rollout
+      ansible.builtin.command: kubectl -n kube-system rollout status daemonset/cilium --timeout=10m
+      changed_when: false
+
+    - name: Wait for all joined nodes to become ready after Cilium install
+      ansible.builtin.command: kubectl wait --for=condition=Ready nodes --all --timeout=10m
+      changed_when: false
+
+    - name: Install MetalLB
+      ansible.builtin.command: >-
+        /usr/local/bin/helm upgrade --install metallb metallb/metallb
+        --namespace metallb-system
+        --create-namespace
+        --version {{ metallb_chart_version }}
+
+    - name: Wait for MetalLB controller
+      block:
+        - name: Wait for MetalLB controller rollout
+          ansible.builtin.command: kubectl -n metallb-system rollout status deployment/metallb-controller --timeout=10m
+          changed_when: false
+      rescue:
+        - name: Show MetalLB pods
+          ansible.builtin.command: kubectl -n metallb-system get pods -o wide
+          changed_when: false
+          ignore_errors: true
+
+        - name: Show MetalLB deployment
+          ansible.builtin.command: kubectl -n metallb-system describe deployment metallb-controller
+          changed_when: false
+          ignore_errors: true
+
+        - name: Show MetalLB ReplicaSet
+          ansible.builtin.shell: kubectl -n metallb-system describe rs -l app.kubernetes.io/component=controller
+          args:
+            executable: /bin/bash
+          changed_when: false
+          ignore_errors: true
+
+        - name: Show MetalLB events
+          ansible.builtin.command: kubectl -n metallb-system get events --sort-by=.lastTimestamp
+          changed_when: false
+          ignore_errors: true
+
+        - name: Fail after collecting MetalLB diagnostics
+          ansible.builtin.fail:
+            msg: "MetalLB controller rollout failed; see the diagnostic output above."
+
+    - name: Wait for MetalLB webhook service endpoints
+      ansible.builtin.command: >-
+        kubectl -n metallb-system get endpoints metallb-webhook-service
+        -o jsonpath={.subsets[*].addresses[*].ip}
+      register: metallb_webhook_endpoints
+      retries: 20
+      delay: 6
+      until: metallb_webhook_endpoints.stdout | trim | length > 0
+      changed_when: false
+
+    - name: Wait for MetalLB controller pod readiness
+      ansible.builtin.command: >-
+        kubectl -n metallb-system wait
+        --for=condition=Ready
+        pod
+        -l app.kubernetes.io/component=controller
+        --timeout=5m
+      changed_when: false
+
+    - name: Apply MetalLB address pool
+      ansible.builtin.command: kubectl apply -f /root/metallb-pool.yaml
+      register: metallb_pool_apply_result
+      retries: 10
+      delay: 15
+      until: metallb_pool_apply_result is succeeded
+      changed_when: false
+
+    - name: Install Traefik
+      ansible.builtin.command: >-
+        /usr/local/bin/helm upgrade --install traefik traefik/traefik
+        --namespace traefik
+        --create-namespace
+        --version {{ traefik_chart_version }}
+        --values /root/traefik-values.yaml
+
+    - name: Ensure Proxmox CSI namespace exists
+      ansible.builtin.shell: kubectl create namespace csi-proxmox --dry-run=client -o yaml | kubectl apply -f -
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: install_proxmox_csi | bool
+
+    - name: Apply Proxmox CSI secret
+      ansible.builtin.command: kubectl apply -f /root/proxmox-csi-secret.yaml
+      changed_when: false
+      when: install_proxmox_csi | bool
+
+    - name: Render Proxmox CSI Helm values
+      ansible.builtin.template:
+        src: proxmox-csi-values.yaml.j2
+        dest: /root/proxmox-csi-values.yaml
+        mode: "0600"
+      when: install_proxmox_csi | bool
+
+    - name: Allow privileged pod security policy in Proxmox CSI namespace
+      ansible.builtin.command: >-
+        kubectl label namespace csi-proxmox
+        pod-security.kubernetes.io/enforce=privileged
+        pod-security.kubernetes.io/audit=privileged
+        pod-security.kubernetes.io/warn=privileged
+        --overwrite
+      changed_when: false
+      when: install_proxmox_csi | bool
+
+    - name: Install Proxmox CSI from upstream Helm chart
+      ansible.builtin.command: >-
+        /usr/local/bin/helm upgrade --install proxmox-csi-plugin
+        oci://ghcr.io/sergelogvinov/charts/proxmox-csi-plugin
+        --namespace csi-proxmox
+        --create-namespace
+        --version {{ proxmox_csi_chart_version }}
+        --values /root/proxmox-csi-values.yaml
+      when: install_proxmox_csi | bool
+
+    - name: Wait for Proxmox CSI rollout
+      ansible.builtin.command: >-
+        kubectl -n csi-proxmox wait
+        --for=condition=Ready
+        pod
+        -l app.kubernetes.io/instance=proxmox-csi-plugin
+        --timeout=10m
+      changed_when: false
+      when: install_proxmox_csi | bool
+      ignore_errors: true
+
+    - name: Wait for nodes to become ready
+      ansible.builtin.command: kubectl wait --for=condition=Ready nodes --all --timeout=10m
+      changed_when: false
+
+    - name: Fetch kubeconfig
+      ansible.builtin.fetch:
+        src: /etc/kubernetes/admin.conf
+        dest: "{{ playbook_dir }}/../out/kubeconfig"
+        flat: true
+
+- name: Install optional qemu-guest-agent after cluster bootstrap
+  hosts: all
+  become: true
+  gather_facts: false
+  strategy: free
+  tasks:
+    - name: Install qemu-guest-agent
+      block:
+        - name: Install qemu-guest-agent package
+          ansible.builtin.package:
+            name: qemu-guest-agent
+            state: present
+          register: qemu_guest_agent_install
+          retries: 3
+          delay: 10
+          until: qemu_guest_agent_install is succeeded
+      rescue:
+        - name: Warn when qemu-guest-agent package install fails
+          ansible.builtin.debug:
+            msg: >-
+              Skipping qemu-guest-agent on {{ inventory_hostname }} after repeated package manager
+              failures. This does not block cluster bootstrap.
+      when: install_qemu_guest_agent | bool
+
+    - name: Check for qemu guest agent device
+      ansible.builtin.stat:
+        path: /dev/virtio-ports/org.qemu.guest_agent.0
+      register: qemu_guest_agent_device
+      when:
+        - install_qemu_guest_agent | bool
+        - qemu_guest_agent_install is not failed
+
+    - name: Ensure qemu-guest-agent is enabled
+      ansible.builtin.service:
+        name: qemu-guest-agent
+        enabled: true
+        state: started
+      when:
+        - install_qemu_guest_agent | bool
+        - qemu_guest_agent_install is not failed
+        - qemu_guest_agent_device.stat.exists | default(false)
+
+    - name: Note when qemu-guest-agent device is unavailable
+      ansible.builtin.debug:
+        msg: "Skipping qemu-guest-agent start because the Proxmox guest-agent device is not present on this VM."
+      when:
+        - install_qemu_guest_agent | bool
+        - qemu_guest_agent_install is not failed
+        - not (qemu_guest_agent_device.stat.exists | default(false))

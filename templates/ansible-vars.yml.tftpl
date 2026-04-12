@@ -1,0 +1,35 @@
+cluster_name: ${cluster_name}
+os_family: ${os_family}
+os_version: ${os_version}
+kubernetes_version: ${kubernetes_version}
+kube_version_minor: ${kube_version_minor}
+kube_package_version: ${kube_package_version}
+kubernetes_api_ip: ${kubernetes_api_ip}
+kubernetes_api_dns: "${kubernetes_api_dns != null ? kubernetes_api_dns : ""}"
+first_control_plane_name: ${first_control_plane_name}
+first_control_plane_ip: ${first_control_plane_ip}
+first_control_plane_dns: "${first_control_plane_dns != null ? first_control_plane_dns : ""}"
+dns_domain: "${dns_domain != null ? dns_domain : ""}"
+pod_cidr: ${pod_cidr}
+service_cidr: ${service_cidr}
+control_plane_count: ${control_plane_count}
+cilium_chart_version: ${cilium_chart_version}
+metallb_chart_version: ${metallb_chart_version}
+traefik_chart_version: ${traefik_chart_version}
+install_qemu_guest_agent: ${install_qemu_guest_agent}
+enable_rocky_cockpit: ${enable_rocky_cockpit}
+install_proxmox_csi: ${install_proxmox_csi}
+proxmox_csi_chart_version: ${proxmox_csi_chart_version}
+proxmox_csi_storage: ${proxmox_csi_storage}
+proxmox_region: ${proxmox_region}
+proxmox_api_url: ${proxmox_api_url}
+proxmox_username: ${proxmox_username}
+proxmox_insecure: ${proxmox_insecure}
+dns_servers:
+%{ for server in dns_servers ~}
+  - ${server}
+%{ endfor ~}
+metallb_address_pools:
+%{ for pool in metallb_address_pools ~}
+  - ${pool}
+%{ endfor ~}

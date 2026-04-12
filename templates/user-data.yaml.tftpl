@@ -1,0 +1,47 @@
+#cloud-config
+hostname: ${hostname}
+%{ if fqdn != null ~}
+fqdn: ${fqdn}
+%{ endif ~}
+manage_etc_hosts: true
+package_update: false
+package_upgrade: false
+
+users:
+  - name: ${ssh_username}
+    gecos: Kubernetes Admin
+    shell: /bin/bash
+    lock_passwd: ${ssh_password_hash == null ? "true" : "false"}
+%{ if ssh_password_hash != null ~}
+    passwd: ${ssh_password_hash}
+%{ endif ~}
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    groups:
+%{ if os_family == "rocky" ~}
+      - wheel
+%{ else ~}
+      - adm
+      - sudo
+%{ endif ~}
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+%{ if operator_ssh_public_key != null ~}
+      - ${operator_ssh_public_key}
+%{ endif ~}
+
+ssh_pwauth: ${ssh_password_hash == null ? "false" : "true"}
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/60-kubeadm-deployer.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      PubkeyAuthentication yes
+      PasswordAuthentication ${ssh_password_hash == null ? "no" : "yes"}
+      KbdInteractiveAuthentication no
+      ChallengeResponseAuthentication no
+      UsePAM yes
+      PermitRootLogin no
+
+runcmd:
+  - systemctl enable --now %{ if os_family == "rocky" }sshd%{ else }ssh%{ endif }

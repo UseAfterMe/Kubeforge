@@ -1,0 +1,13 @@
+deployment:
+  replicas: {{ 2 if groups['kube_workers'] | length > 1 else 1 }}
+service:
+  enabled: true
+  type: LoadBalancer
+providers:
+  kubernetesCRD:
+    enabled: true
+  kubernetesIngress:
+    enabled: true
+ingressRoute:
+  dashboard:
+    enabled: false

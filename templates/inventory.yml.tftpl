@@ -1,0 +1,52 @@
+all:
+  vars:
+    ansible_user: ${ssh_username}
+    ansible_ssh_private_key_file: ${ssh_private_key_path}
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      -o ConnectTimeout=5
+      -o ConnectionAttempts=3
+      -o ServerAliveInterval=15
+      -o ServerAliveCountMax=3
+      -o ControlMaster=auto
+      -o ControlPersist=60s
+    ansible_python_interpreter: /usr/bin/python3
+  children:
+    bootstrap_control_plane:
+      hosts:
+        ${first_control_plane}: {}
+    kube_control_plane:
+      hosts:
+%{ for name in control_plane_names ~}
+        ${name}:
+          ansible_host: ${nodes[name].ip}
+          node_ip: ${nodes[name].ip}
+          node_dns_name: ${node_dns_names[name] != null ? node_dns_names[name] : ""}
+          proxmox_node: ${nodes[name].host_node}
+          vm_id: ${nodes[name].vm_id}
+%{ endfor ~}
+    kube_workers:
+      hosts:
+%{ for name in worker_names ~}
+        ${name}:
+          ansible_host: ${nodes[name].ip}
+          node_ip: ${nodes[name].ip}
+          node_dns_name: ${node_dns_names[name] != null ? node_dns_names[name] : ""}
+          proxmox_node: ${nodes[name].host_node}
+          vm_id: ${nodes[name].vm_id}
+%{ endfor ~}
+%{ if haproxy_name != null ~}
+    haproxy:
+      hosts:
+        ${haproxy_name}:
+          ansible_host: ${nodes[haproxy_name].ip}
+          node_ip: ${nodes[haproxy_name].ip}
+          node_dns_name: ${node_dns_names[haproxy_name] != null ? node_dns_names[haproxy_name] : ""}
+          proxmox_node: ${nodes[haproxy_name].host_node}
+          vm_id: ${nodes[haproxy_name].vm_id}
+%{ endif ~}
+    kube_cluster:
+      children:
+        kube_control_plane: {}
+        kube_workers: {}

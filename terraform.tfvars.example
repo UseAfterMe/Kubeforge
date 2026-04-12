@@ -1,0 +1,64 @@
+{
+  "proxmox_api_url": "https://pve.example.com:8006/api2/json",
+  "proxmox_username": "root@pam",
+  "proxmox_insecure": true,
+  "cluster_name": "lab-k8s",
+  "dns_domain": "example.internal",
+  "proxmox_region": "homelab",
+  "os_family": "ubuntu",
+  "os_version": "24.04",
+  "cloud_image_url": "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img",
+  "cloud_image_file_name": "noble-server-cloudimg-amd64.img",
+  "kubernetes_version": "1.34.1",
+  "gateway": "192.168.1.1",
+  "prefix": 24,
+  "dns_servers": [
+    "1.1.1.1",
+    "8.8.8.8"
+  ],
+  "bridge": "vmbr0",
+  "vlan_id": null,
+  "vm_datastore": "local-lvm",
+  "image_datastore": "local",
+  "cloudinit_datastore": "local-lvm",
+  "snippets_datastore": "local",
+  "ssh_username": "ubuntu",
+  "operator_ssh_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBexamplegeneratedkeyhere user@laptop",
+  "install_qemu_guest_agent": true,
+  "enable_rocky_cockpit": false,
+  "ssh_password_hash": null,
+  "pod_cidr": "10.244.0.0/16",
+  "service_cidr": "10.96.0.0/12",
+  "metallb_address_pools": [
+    "192.168.1.240-192.168.1.250"
+  ],
+  "cilium_chart_version": "1.17.4",
+  "metallb_chart_version": "0.15.2",
+  "traefik_chart_version": "37.0.0",
+  "install_proxmox_csi": true,
+  "proxmox_csi_chart_version": "0.5.4",
+  "proxmox_csi_storage": "local-lvm",
+  "nodes": {
+    "lab-k8s-cp": {
+      "host_node": "pve",
+      "role": "controlplane",
+      "vm_id": 800,
+      "ip": "192.168.1.80",
+      "dns_name": "lab-k8s-cp.example.internal",
+      "cores": 4,
+      "memory_mb": 8192,
+      "disk_gb": 80
+    },
+    "lab-k8s-wk": {
+      "host_node": "pve",
+      "role": "worker",
+      "vm_id": 900,
+      "ip": "192.168.1.90",
+      "dns_name": "lab-k8s-wk.example.internal",
+      "cores": 4,
+      "memory_mb": 8192,
+      "disk_gb": 100
+    }
+  },
+  "haproxy_node": null
+}
