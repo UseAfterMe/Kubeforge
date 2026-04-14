@@ -1,5 +1,26 @@
 ---
 
+- name: Configure Rocky resolv.conf from deployer DNS settings before package installs
+  ansible.builtin.copy:
+    dest: /etc/resolv.conf
+    mode: "0644"
+    content: |
+      {% if dns_domain | default('') | trim %}
+      search {{ dns_domain }}
+      {% endif %}
+      {% for server in dns_servers %}
+      nameserver {{ server }}
+      {% endfor %}
+      options timeout:2 attempts:2
+
+- name: Wait for Rocky DNS resolution before package installs
+  ansible.builtin.command: getent hosts mirrors.rockylinux.org
+  register: rocky_dns_wait
+  changed_when: false
+  retries: 12
+  delay: 10
+  until: rocky_dns_wait.rc == 0
+
 - name: Install base packages
   ansible.builtin.shell: >-
     timeout 240 dnf -y install
@@ -16,6 +37,9 @@
     executable: /bin/bash
   register: base_packages_result
   changed_when: "'Nothing to do.' not in base_packages_result.stdout"
+  retries: 4
+  delay: 20
+  until: base_packages_result is succeeded
 
 - name: Configure Docker CE repository for containerd.io
   ansible.builtin.copy:
@@ -35,6 +59,9 @@
     executable: /bin/bash
   register: containerd_package_result
   changed_when: "'Nothing to do.' not in containerd_package_result.stdout"
+  retries: 4
+  delay: 20
+  until: containerd_package_result is succeeded
 
 - name: Disable swap immediately
   ansible.builtin.command: swapoff -a

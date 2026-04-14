@@ -96,6 +96,17 @@ def style_choice_label(choices: list[str], color_code: str = ANSI_MAGENTA) -> st
     return colorize("/".join(choices), color_code)
 
 
+def read_prompt(rendered: str, *, secret: bool = False) -> str:
+    if secret:
+        return getpass.getpass(rendered)
+    sys.stdout.write(rendered)
+    sys.stdout.flush()
+    value = sys.stdin.readline()
+    if value == "":
+        raise EOFError
+    return value.rstrip("\n")
+
+
 def prompt(text: str, default: str | None = None, secret: bool = False) -> str:
     if supports_color():
         suffix = f" [{style_default_value(default)}]" if default not in (None, "") else ""
@@ -104,7 +115,7 @@ def prompt(text: str, default: str | None = None, secret: bool = False) -> str:
         suffix = f" [{default}]" if default not in (None, "") else ""
         rendered = f"{text}{suffix}: "
     while True:
-        value = getpass.getpass(rendered) if secret else input(rendered)
+        value = read_prompt(rendered, secret=secret)
         value = value.strip()
         if value:
             return value
@@ -114,7 +125,7 @@ def prompt(text: str, default: str | None = None, secret: bool = False) -> str:
 
 def prompt_optional_secret(text: str) -> str | None:
     rendered = f"{style_prompt_label(text) if supports_color() else text}: "
-    value = getpass.getpass(rendered).strip()
+    value = read_prompt(rendered, secret=True).strip()
     return value or None
 
 
@@ -188,10 +199,98 @@ def prompt_csv_ips(text: str, default: str) -> list[str]:
             print(colorize(f"Invalid IP list: {exc}", ANSI_YELLOW))
 
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEPLOYMENT_HISTORY_DIR = REPO_ROOT / "out" / "deployment-history"
+
+
+def load_history_snapshot(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def iter_history_snapshots(exclude_cluster_name: str | None = None) -> list[dict]:
+    snapshots: list[dict] = []
+    if not DEPLOYMENT_HISTORY_DIR.exists():
+        return snapshots
+
+    for snapshot_path in sorted(DEPLOYMENT_HISTORY_DIR.glob('*/last-applied.tfvars.json')):
+        snapshot = load_history_snapshot(snapshot_path)
+        if not isinstance(snapshot, dict):
+            continue
+        if exclude_cluster_name and str(snapshot.get("cluster_name", "")).strip() == exclude_cluster_name:
+            continue
+        snapshots.append(snapshot)
+    return snapshots
+
+
+def history_ipv4_usage(state: dict[str, object]) -> tuple[list[str], list[str]]:
+    cluster_name = str(state.get("cluster_name", "")).strip() or None
+    gateway = str(state.get("gateway", "")).strip()
+    prefix = state.get("prefix")
+
+    network = None
+    if gateway and prefix not in (None, ""):
+        try:
+            network = ipaddress.ip_network(f"{gateway}/{int(prefix)}", strict=False)
+        except ValueError:
+            network = None
+
+    cluster_ips: set[str] = set()
+    load_balancer_ips: set[str] = set()
+
+    def record_ip(target: set[str], raw: object) -> None:
+        if not isinstance(raw, str) or not raw.strip():
+            return
+        try:
+            ip_obj = ipaddress.ip_address(raw.strip())
+        except ValueError:
+            return
+        if ip_obj.version != 4:
+            return
+        if network is not None and ip_obj not in network:
+            return
+        target.add(str(ip_obj))
+
+    for snapshot in iter_history_snapshots(cluster_name):
+        nodes = snapshot.get("nodes", {})
+        if isinstance(nodes, dict):
+            for node in nodes.values():
+                if isinstance(node, dict):
+                    record_ip(cluster_ips, node.get("ip"))
+
+        record_ip(cluster_ips, snapshot.get("kube_vip_ip"))
+
+        pools = snapshot.get("load_balancer_ip_pools", snapshot.get("metallb_address_pools", []))
+        if isinstance(pools, list):
+            for pool in pools:
+                if not isinstance(pool, str) or not pool.strip():
+                    continue
+                try:
+                    for ip_value in expand_ipv4_range(pool.strip()):
+                        record_ip(load_balancer_ips, ip_value)
+                except ValueError:
+                    continue
+
+    return sorted(cluster_ips, key=lambda value: int(ipaddress.ip_address(value))), sorted(load_balancer_ips, key=lambda value: int(ipaddress.ip_address(value)))
+
+
+def next_recorded_ip(values: list[str]) -> str | None:
+    if not values:
+        return None
+    return str(ipaddress.ip_address(values[-1]) + 1)
+
+
+def suggest_range(start_ip: str, count: int) -> str:
+    values = next_ips(start_ip, count)
+    return compact_ipv4_range(values[0], values[-1])
+
+
 def prompt_load_balancer_ip_pools(default: str) -> list[str]:
     default_pools = [item.strip() for item in default.split(",") if item.strip()]
     default_start_ip = "192.168.1.240"
-    default_count = 11
+    default_count = 10
 
     if len(default_pools) == 1:
         try:
@@ -342,7 +441,7 @@ def prompt_chart_version(name: str, default: str, index_url: str, chart_name: st
         print("  c. custom version")
 
         while True:
-            choice = input(f"Select {name} chart version [{style_default_value(effective_default)}]: ").strip().lower()
+            choice = read_prompt(f"Select {name} chart version [{style_default_value(effective_default)}]: ").strip().lower()
             if not choice:
                 return effective_default
             if choice == "c":
@@ -357,7 +456,7 @@ def prompt_chart_version(name: str, default: str, index_url: str, chart_name: st
     print(f"  1. {default} {colorize('(recommended)', ANSI_GREEN)}")
     print("  c. custom version")
     while True:
-        choice = input(f"Select {name} chart version [{style_default_value(default)}]: ").strip().lower()
+        choice = read_prompt(f"Select {name} chart version [{style_default_value(default)}]: ").strip().lower()
         if not choice or choice == "1":
             return default
         if choice == "c":
@@ -383,9 +482,9 @@ def prompt_bool(text: str, default: bool) -> bool:
     default_label = "Y/n" if default else "y/N"
     while True:
         if supports_color():
-            raw = input(f"{style_prompt_label(text)} [{style_default_value(default_label)}]: ").strip().lower()
+            raw = read_prompt(f"{style_prompt_label(text)} [{style_default_value(default_label)}]: ").strip().lower()
         else:
-            raw = input(f"{text} [{default_label}]: ").strip().lower()
+            raw = read_prompt(f"{text} [{default_label}]: ").strip().lower()
         if not raw:
             return default
         if raw in {"y", "yes"}:
@@ -576,7 +675,7 @@ def choose_os_image() -> tuple[str, str, str, str]:
 
     selected: dict[str, str] | None = None
     while selected is None:
-        choice = input(f"Select {family.title()} version [{1}]: ").strip().lower()
+        choice = read_prompt(f"Select {family.title()} version [{1}]: ").strip().lower()
         if not choice or choice == "1":
             selected = presets[0]
             break
@@ -789,7 +888,7 @@ def choose_kubernetes_version() -> str:
     print("  c. custom version")
 
     while True:
-        choice = input(f"Select Kubernetes version [{style_default_value(versions[0])}]: ").strip().lower()
+        choice = read_prompt(f"Select Kubernetes version [{style_default_value(versions[0])}]: ").strip().lower()
         if not choice:
             return versions[0]
         if choice == "c":
@@ -802,11 +901,20 @@ def choose_kubernetes_version() -> str:
 
 
 def summarize_nodes(nodes: dict[str, dict], kube_vip_ip: str | None) -> None:
-    print("\nPlanned nodes:")
+    print(f"\n{style_prompt_label('Planned nodes')}:")
     for name, node in nodes.items():
-        print(f"  {name:<8} {node['role']:<12} {node['ip']:<15} vmid={node['vm_id']} host={node['host_node']}")
+        role_color = ANSI_GREEN if node["role"] == "controlplane" else ANSI_CYAN
+        role_label = colorize(f"{node['role']:<12}", role_color)
+        node_name = colorize(f"{name:<8}", ANSI_MAGENTA)
+        node_ip = colorize(f"{node['ip']:<15}", ANSI_YELLOW)
+        vmid = colorize(str(node["vm_id"]), ANSI_CYAN)
+        host_node = colorize(str(node["host_node"]), ANSI_CYAN)
+        print(f"  {node_name} {role_label} {node_ip} vmid={vmid} host={host_node}")
     if kube_vip_ip:
-        print(f"  {'vip':<8} {'endpoint':<12} {kube_vip_ip:<15}")
+        vip_name = colorize(f"{'vip':<8}", ANSI_MAGENTA)
+        vip_role = colorize(f"{'endpoint':<12}", ANSI_GREEN)
+        vip_ip = colorize(f"{kube_vip_ip:<15}", ANSI_YELLOW)
+        print(f"  {vip_name} {vip_role} {vip_ip}")
 
 
 def ensure_available_vmids(used_vmids: set[int], vmids: list[int]) -> None:
@@ -1043,10 +1151,13 @@ def prompt_topology_section(state: dict[str, object], used_vmids: set[int]) -> N
     current_wk_ips = list(state.get("wk_ips", []))
     current_kube_vip_ip = state.get("kube_vip_ip")
     kube_vip_needed = control_plane_count > 1
+    recorded_cluster_ips, recorded_lb_ips = history_ipv4_usage(state)
+    next_cluster_history_ip = next_recorded_ip(recorded_cluster_ips)
+    next_lb_history_ip = next_recorded_ip(recorded_lb_ips)
 
     if state["use_shared_ip_range"]:
         if kube_vip_needed:
-            kube_vip_default = str(current_kube_vip_ip or "192.168.1.60")
+            kube_vip_default = str(current_kube_vip_ip or next_cluster_history_ip or "192.168.1.60")
             state["kube_vip_ip"] = parse_ip(prompt("kube-vip IP for Kubernetes API", kube_vip_default))
         else:
             state["kube_vip_ip"] = None
@@ -1059,9 +1170,9 @@ def prompt_topology_section(state: dict[str, object], used_vmids: set[int]) -> N
             if len(existing_ips) == required_count and is_contiguous_ips(existing_ips):
                 shared_default = existing_ips[0]
             else:
-                shared_default = str(ipaddress.ip_address(str(state["kube_vip_ip"])) + 1) if state.get("kube_vip_ip") else "192.168.1.60"
+                shared_default = str(ipaddress.ip_address(str(state["kube_vip_ip"])) + 1) if state.get("kube_vip_ip") else (next_cluster_history_ip or "192.168.1.60")
         else:
-            shared_default = str(ipaddress.ip_address(str(state["kube_vip_ip"])) + 1) if state.get("kube_vip_ip") else "192.168.1.60"
+            shared_default = str(ipaddress.ip_address(str(state["kube_vip_ip"])) + 1) if state.get("kube_vip_ip") else (next_cluster_history_ip or "192.168.1.60")
 
         start_ip = parse_ip(prompt("Cluster node starting IP for control planes and workers", shared_default))
         allocated_ips = next_ips(start_ip, required_count)
@@ -1071,7 +1182,7 @@ def prompt_topology_section(state: dict[str, object], used_vmids: set[int]) -> N
         state["wk_ips"] = allocated_ips[cursor : cursor + worker_count]
     else:
         if kube_vip_needed:
-            state["kube_vip_ip"] = parse_ip(prompt("kube-vip IP for Kubernetes API", str(current_kube_vip_ip or "192.168.1.70")))
+            state["kube_vip_ip"] = parse_ip(prompt("kube-vip IP for Kubernetes API", str(current_kube_vip_ip or next_cluster_history_ip or "192.168.1.70")))
         else:
             state["kube_vip_ip"] = None
 
@@ -1080,7 +1191,7 @@ def prompt_topology_section(state: dict[str, object], used_vmids: set[int]) -> N
         elif kube_vip_needed and state.get("kube_vip_ip"):
             control_plane_default_start_ip = str(ipaddress.ip_address(str(state["kube_vip_ip"])) + 1)
         else:
-            control_plane_default_start_ip = "192.168.1.80"
+            control_plane_default_start_ip = next_cluster_history_ip or "192.168.1.80"
 
         state["cp_ips"] = prompt_ip_assignment_with_existing(
             "Control plane",
@@ -1096,7 +1207,7 @@ def prompt_topology_section(state: dict[str, object], used_vmids: set[int]) -> N
         elif kube_vip_needed and state.get("kube_vip_ip"):
             worker_default_start_ip = str(ipaddress.ip_address(str(state["kube_vip_ip"])) + control_plane_count + 1)
         else:
-            worker_default_start_ip = "192.168.1.90"
+            worker_default_start_ip = next_cluster_history_ip or "192.168.1.90"
 
         state["wk_ips"] = prompt_ip_assignment_with_existing(
             "Worker",
@@ -1105,14 +1216,32 @@ def prompt_topology_section(state: dict[str, object], used_vmids: set[int]) -> N
             worker_default_start_ip,
         )
 
-    state["load_balancer_ip_pools"] = prompt_load_balancer_ip_pools(
-        ",".join(state.get("load_balancer_ip_pools", state.get("metallb_address_pools", ["192.168.1.240-250"]))),
-    )
+    current_lb_pools = list(state.get("load_balancer_ip_pools", state.get("metallb_address_pools", [])))
+    if current_lb_pools:
+        lb_default = ",".join(current_lb_pools)
+    elif next_lb_history_ip:
+        lb_default = suggest_range(next_lb_history_ip, 10)
+    elif state["wk_ips"]:
+        lb_default = suggest_range(str(ipaddress.ip_address(state["wk_ips"][-1]) + 1), 10)
+    elif state["cp_ips"]:
+        lb_default = suggest_range(str(ipaddress.ip_address(state["cp_ips"][-1]) + 1), 10)
+    elif state.get("kube_vip_ip"):
+        lb_default = suggest_range(str(ipaddress.ip_address(str(state["kube_vip_ip"])) + 1), 10)
+    else:
+        lb_default = "192.168.1.240-249"
+
+    state["load_balancer_ip_pools"] = prompt_load_balancer_ip_pools(lb_default)
     state["cilium_load_balancer_pool_name"] = prompt_hostname_label(
         "Cilium LoadBalancer pool name",
         str(state.get("cilium_load_balancer_pool_name", "default")),
     )
     l2_default_name = str(state.get("cilium_l2_policy_name") or f"{state['cilium_load_balancer_pool_name']}-l2")
+    if (
+        l2_default_name in {"default", "default-l2"}
+        or l2_default_name == f"{str(state.get('cilium_load_balancer_pool_name', 'default'))}-l2"
+        or not HOSTNAME_RE.fullmatch(l2_default_name)
+    ):
+        l2_default_name = f"{state['cilium_load_balancer_pool_name']}-l2"
     state["cilium_l2_policy_name"] = prompt_hostname_label(
         "Cilium L2 announcement policy name",
         l2_default_name,
@@ -1274,7 +1403,7 @@ def main() -> int:
         print("  5. sizing")
         print("  6. charts/addons")
         print("  w. write config")
-        choice = input("Choose a section to edit, or press w to write the config [w]: ").strip().lower()
+        choice = read_prompt("Choose a section to edit, or press w to write the config [w]: ").strip().lower()
         if not choice or choice == "w":
             if not bool(state.get("allow_subnet_mismatch", False)):
                 try:

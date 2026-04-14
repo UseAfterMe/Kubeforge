@@ -31,6 +31,10 @@ trap handle_interrupt INT TERM
 ACTION="${1:-apply}"
 shift || true
 
+workspace=""
+destroy_workspace=""
+upgrade_workspace=""
+
 TFVARS_FILE="${TFVARS_FILE:-terraform.tfvars.json}"
 OUT_DIR="${OUT_DIR:-out}"
 DEPLOYMENT_HISTORY_DIR="${OUT_DIR}/deployment-history"
@@ -152,7 +156,7 @@ optional_tool_install_hint() {
 
   case "${platform}:${tool}" in
     macos:cilium)
-      printf '%s\n' "Follow the official Cilium CLI install instructions."
+      printf '%s\n' "brew install cilium-cli"
       ;;
     macos:kubectx)
       printf '%s\n' "brew install kubectx"
@@ -240,14 +244,14 @@ prompt_yes_no() {
   fi
 
   while true; do
-    local reply
+    local reply lowered
     read -r -p "${question} [${label}]: " reply
-    reply="${reply,,}"
-    if [[ -z "${reply}" ]]; then
+    lowered="$(printf '%s' "${reply}" | tr '[:upper:]' '[:lower:]')"
+    if [[ -z "${lowered}" ]]; then
       [[ "${default}" == "true" ]]
       return
     fi
-    case "${reply}" in
+    case "${lowered}" in
       y|yes) return 0 ;;
       n|no) return 1 ;;
     esac
@@ -613,24 +617,21 @@ list_recorded_workspaces() {
 
 workspace_has_state_resources() {
   local workspace="$1"
-  local original_workspace
+  local state_path address
 
-  original_workspace="$(tofu workspace show 2>/dev/null || true)"
-  if [[ -z "${original_workspace}" ]]; then
+  state_path="$(workspace_state_path "${workspace}")"
+  if [[ ! -f "${state_path}" ]]; then
     return 1
   fi
 
-  if ! tofu workspace select "${workspace}" >/dev/null 2>&1; then
-    tofu workspace select "${original_workspace}" >/dev/null 2>&1 || true
-    return 1
-  fi
-
-  if tofu state list >/dev/null 2>&1 && [[ -n "$(tofu state list 2>/dev/null || true)" ]]; then
-    tofu workspace select "${original_workspace}" >/dev/null 2>&1 || true
+  while IFS= read -r address; do
+    [[ -z "${address}" ]] && continue
+    if [[ "${address}" == proxmox_download_file.cloud_image* ]]; then
+      continue
+    fi
     return 0
-  fi
+  done < <(tofu state list -state="${state_path}" 2>/dev/null || true)
 
-  tofu workspace select "${original_workspace}" >/dev/null 2>&1 || true
   return 1
 }
 
@@ -924,6 +925,59 @@ resolve_destroy_state_args() {
   fi
 }
 
+
+should_remove_cloud_image_on_destroy() {
+  local configured lowered
+  configured="${DESTROY_REMOVE_CLOUD_IMAGE:-}"
+  lowered="$(printf '%s' "${configured}" | tr '[:upper:]' '[:lower:]')"
+
+  case "${lowered}" in
+    1|true|y|yes)
+      return 0
+      ;;
+    0|false|n|no)
+      return 1
+      ;;
+  esac
+
+  if [[ ! -t 0 ]]; then
+    return 1
+  fi
+
+  printf '\n'
+  log_info "The cached cloud image can be kept on Proxmox to avoid re-downloading it later."
+  if prompt_yes_no "Also remove the cached cloud image from Proxmox?" false; then
+    return 0
+  fi
+  return 1
+}
+
+destroy_targets_preserving_cloud_image() {
+  local workspace="$1"
+  local destroy_state_arg="$2"
+  local state_path address
+  local targets=()
+
+  state_path="$(workspace_state_path "${workspace}")"
+  if [[ -n "${destroy_state_arg}" ]]; then
+    state_path="${destroy_state_arg#-state=}"
+  fi
+
+  if [[ ! -f "${state_path}" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r address; do
+    [[ -z "${address}" ]] && continue
+    if [[ "${address}" == proxmox_download_file.cloud_image* ]]; then
+      continue
+    fi
+    targets+=("-target=${address}")
+  done < <(tofu state list -state="${state_path}" 2>/dev/null || true)
+
+  printf '%s\n' "${targets[@]}"
+}
+
 choose_destroy_workspace() {
   local workspaces=()
   while IFS= read -r workspace; do
@@ -947,27 +1001,23 @@ choose_destroy_workspace() {
     return
   fi
 
-  echo "Tracked clusters:" >&2
+  printf '%s==>%s %s\n' "${COLOR_CYAN}${COLOR_BOLD}" "${COLOR_RESET}" "Tracked clusters:" >&2
   local workspace
-  local workspace_names_label=""
   for workspace in "${workspaces[@]}"; do
-    echo "  - ${workspace}: $(describe_workspace "${workspace}")" >&2
-    if [[ -n "${workspace_names_label}" ]]; then
-      workspace_names_label="${workspace_names_label}, "
-    fi
-    workspace_names_label="${workspace_names_label}${workspace}"
+    printf '  %s-%s %s%s%s\n' "${COLOR_DIM}" "${COLOR_RESET}" "${COLOR_GREEN}${COLOR_BOLD}" "${workspace}" "${COLOR_RESET}" >&2
+    printf '    %s%s%s\n' "${COLOR_DIM}" "$(describe_workspace "${workspace}")" "${COLOR_RESET}" >&2
   done
 
   while true; do
     local raw
-    read -r -p "Enter the workspace name to destroy (${workspace_names_label}): " raw >&2
+    read -r -p "Enter the workspace name to destroy: " raw
     for workspace in "${workspaces[@]}"; do
       if [[ "${raw}" == "${workspace}" ]]; then
         printf '%s\n' "${workspace}"
         return
       fi
     done
-    echo "Enter one of the listed workspace names." >&2
+    log_warn "Enter one of the listed workspace names."
   done
 }
 
@@ -1028,18 +1078,19 @@ confirm_destroy_workspace() {
   local description confirmation
   description="$(describe_workspace "${workspace}")"
 
-  echo
-  echo "You are about to destroy:"
-  echo "  ${description}"
-  echo
-  read -r -p "Are you sure you want to destroy this cluster? [y/N]: " confirmation
+  printf '\n'
+  log_warn "You are about to destroy cluster workspace:"
+  printf '  %s-%s workspace: %s%s%s\n' "${COLOR_DIM}" "${COLOR_RESET}" "${COLOR_GREEN}${COLOR_BOLD}" "${workspace}" "${COLOR_RESET}"
+  printf '    %s%s%s\n' "${COLOR_DIM}" "${description}" "${COLOR_RESET}"
+  printf '\n'
+  read -r -p "Proceed with destroy? [y/N]: " confirmation
   case "${confirmation:-N}" in
     y|Y|yes|YES)
       return 0
       ;;
     *)
-    echo "Destroy cancelled."
-    exit 1
+      log_warn "Destroy cancelled."
+      exit 1
       ;;
   esac
 }
@@ -1079,6 +1130,220 @@ print_selected_image() {
 print_selected_workspace() {
   local workspace="$1"
   log_step "Selected cluster workspace: ${workspace}"
+}
+
+print_bootstrap_review() {
+  python3 - "${TFVARS_FILE}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+nodes = data.get("nodes", {})
+control_planes = []
+workers = []
+for name in sorted(nodes):
+    node = nodes[name]
+    line = f"{name} ({node.get('ip','?')})"
+    if node.get("role") == "controlplane":
+        control_planes.append(line)
+    elif node.get("role") == "worker":
+        workers.append(line)
+
+cluster_name = data.get("cluster_name", "")
+os_family = data.get("os_family", "")
+os_version = data.get("os_version", "")
+kubernetes_version = data.get("kubernetes_version", "")
+gateway = data.get("gateway", "")
+prefix = data.get("prefix", "")
+dns_servers = ", ".join(data.get("dns_servers", []))
+api_vip = data.get("kube_vip_ip")
+api_endpoint = api_vip or (nodes[sorted(nodes)[0]].get("ip") if nodes else "")
+lb_pools = ", ".join(data.get("load_balancer_ip_pools", []))
+addons = ["cilium"]
+if lb_pools:
+    addons.append("cilium-lb")
+addons.append("traefik")
+if data.get("install_proxmox_csi"):
+    addons.append("proxmox-csi")
+
+print(f"cluster={cluster_name}")
+print(f"os={os_family} {os_version}")
+print(f"kubernetes={kubernetes_version}")
+print(f"api_endpoint=https://{api_endpoint}:6443")
+print(f"gateway={gateway}/{prefix}")
+print(f"dns_servers={dns_servers}")
+print(f"control_planes={len(control_planes)}")
+for item in control_planes:
+    print(f"cp={item}")
+print(f"workers={len(workers)}")
+for item in workers:
+    print(f"wk={item}")
+print(f"load_balancer_pools={lb_pools}")
+print(f"addons={', '.join(addons)}")
+PY
+}
+
+confirm_bootstrap_review() {
+  local workspace="$1"
+  local summary_lines
+
+  summary_lines="$(print_bootstrap_review)"
+
+  printf '\n'
+  log_warn "Final bootstrap review:"
+  printf '  %s-%s %sworkspace:%s %s%s%s\n' "${COLOR_DIM}" "${COLOR_RESET}" "${COLOR_CYAN}${COLOR_BOLD}" "${COLOR_RESET}" "${COLOR_GREEN}${COLOR_BOLD}" "${workspace}" "${COLOR_RESET}"
+
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    local key value
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "${key}" in
+      cluster)
+        printf '  %s-%s %scluster:%s %s%s%s\n' "${COLOR_DIM}" "${COLOR_RESET}" "${COLOR_CYAN}${COLOR_BOLD}" "${COLOR_RESET}" "${COLOR_GREEN}" "${value}" "${COLOR_RESET}"
+        ;;
+      os)
+        printf '  %s-%s %sos:%s %s%s%s\n' "${COLOR_DIM}" "${COLOR_RESET}" "${COLOR_CYAN}${COLOR_BOLD}" "${COLOR_RESET}" "${COLOR_GREEN}" "${value}" "${COLOR_RESET}"
+        ;;
+      kubernetes)
+        printf '  %s-%s %skubernetes:%s %s%s%s\n' "${COLOR_DIM}" "${COLOR_RESET}" "${COLOR_CYAN}${COLOR_BOLD}" "${COLOR_RESET}" "${COLOR_GREEN}" "${value}" "${COLOR_RESET}"
+        ;;
+      api_endpoint)
+        printf '  %s-%s %sapi:%s %s%s%s\n' "${COLOR_DIM}" "${COLOR_RESET}" "${COLOR_CYAN}${COLOR_BOLD}" "${COLOR_RESET}" "${COLOR_YELLOW}${COLOR_BOLD}" "${value}" "${COLOR_RESET}"
+        ;;
+      gateway)
+        printf '  %s-%s %snetwork:%s %s%s%s\n' "${COLOR_DIM}" "${COLOR_RESET}" "${COLOR_CYAN}${COLOR_BOLD}" "${COLOR_RESET}" "${COLOR_GREEN}" "${value}" "${COLOR_RESET}"
+        ;;
+      dns_servers)
+        printf '  %s-%s %sdns:%s %s%s%s\n' "${COLOR_DIM}" "${COLOR_RESET}" "${COLOR_CYAN}${COLOR_BOLD}" "${COLOR_RESET}" "${COLOR_YELLOW}${COLOR_BOLD}" "${value}" "${COLOR_RESET}"
+        ;;
+      control_planes)
+        printf '  %s-%s %scontrol planes:%s %s%s%s\n' "${COLOR_DIM}" "${COLOR_RESET}" "${COLOR_CYAN}${COLOR_BOLD}" "${COLOR_RESET}" "${COLOR_GREEN}${COLOR_BOLD}" "${value}" "${COLOR_RESET}"
+        ;;
+      workers)
+        printf '  %s-%s %sworkers:%s %s%s%s\n' "${COLOR_DIM}" "${COLOR_RESET}" "${COLOR_CYAN}${COLOR_BOLD}" "${COLOR_RESET}" "${COLOR_GREEN}${COLOR_BOLD}" "${value}" "${COLOR_RESET}"
+        ;;
+      cp)
+        printf '    %s%s%s %s(control plane)%s\n' "${COLOR_YELLOW}${COLOR_BOLD}" "${value}" "${COLOR_RESET}" "${COLOR_DIM}" "${COLOR_RESET}"
+        ;;
+      wk)
+        printf '    %s%s%s %s(worker)%s\n' "${COLOR_DIM}${COLOR_YELLOW}" "${value}" "${COLOR_RESET}" "${COLOR_DIM}" "${COLOR_RESET}"
+        ;;
+      load_balancer_pools)
+        printf '  %s-%s %sload balancer pools:%s %s%s%s\n' "${COLOR_DIM}" "${COLOR_RESET}" "${COLOR_CYAN}${COLOR_BOLD}" "${COLOR_RESET}" "${COLOR_YELLOW}" "${value}" "${COLOR_RESET}"
+        ;;
+      addons)
+        printf '  %s-%s %saddons:%s %s%s%s\n' "${COLOR_DIM}" "${COLOR_RESET}" "${COLOR_CYAN}${COLOR_BOLD}" "${COLOR_RESET}" "${COLOR_GREEN}${COLOR_BOLD}" "${value}" "${COLOR_RESET}"
+        ;;
+    esac
+  done <<<"${summary_lines}"
+  printf '\n'
+
+  if [[ -t 0 ]]; then
+    if ! prompt_yes_no "Proceed with bootstrap using this configuration?" true; then
+      log_warn "Bootstrap cancelled."
+      exit 1
+    fi
+  fi
+}
+
+planned_cloud_image_addresses() {
+  python3 - "${TFVARS_FILE}" <<'PY2'
+import json
+import sys
+from pathlib import Path
+
+with Path(sys.argv[1]).open(encoding="utf-8") as handle:
+    data = json.load(handle)
+
+nodes = data.get("nodes", {})
+hosts = sorted({str(node.get("host_node")) for node in nodes.values() if isinstance(node, dict) and node.get("host_node")})
+for host in hosts:
+    print(f'proxmox_download_file.cloud_image["{host}"]')
+PY2
+}
+
+cloud_image_volume_id() {
+  local datastore file_name
+  datastore="$(read_tfvar image_datastore)"
+  file_name="$(read_tfvar cloud_image_file_name)"
+  printf '%s\n' "${datastore}:iso/${file_name}"
+}
+
+cloud_image_exists_on_proxmox() {
+  need python3
+  python3 - "${TFVARS_FILE}" <<'PY2'
+import json
+import os
+import ssl
+import sys
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+config = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+password = os.environ.get("PROXMOX_PASSWORD") or os.environ.get("TF_VAR_proxmox_password")
+if not password:
+    raise SystemExit(1)
+
+api_url = str(config["proxmox_api_url"]).rstrip("/")
+username = str(config["proxmox_username"])
+insecure = bool(config.get("proxmox_insecure", False))
+datastore = str(config["image_datastore"])
+file_name = str(config["cloud_image_file_name"])
+node_names = sorted({str(node.get("host_node")) for node in config.get("nodes", {}).values() if isinstance(node, dict) and node.get("host_node")})
+
+context = ssl._create_unverified_context() if insecure else None
+payload = urllib.parse.urlencode({"username": username, "password": password}).encode()
+req = urllib.request.Request(f"{api_url}/access/ticket", data=payload, method="POST")
+with urllib.request.urlopen(req, context=context, timeout=30) as response:
+    auth = json.loads(response.read().decode())
+
+data = auth.get("data", {})
+ticket = data.get("ticket")
+csrf = data.get("CSRFPreventionToken")
+if not ticket:
+    raise SystemExit(1)
+
+headers = {"Cookie": f"PVEAuthCookie={ticket}"}
+if csrf:
+    headers["CSRFPreventionToken"] = csrf
+
+for node_name in node_names:
+    req = urllib.request.Request(f"{api_url}/nodes/{node_name}/storage/{datastore}/content", headers=headers)
+    with urllib.request.urlopen(req, context=context, timeout=30) as response:
+        contents = json.loads(response.read().decode()).get("data", [])
+    found = False
+    for entry in contents:
+        haystack = " ".join(str(entry.get(field, "")) for field in ("volid", "text", "path", "notes"))
+        if file_name in haystack:
+            found = True
+            break
+    if not found:
+        raise SystemExit(1)
+
+raise SystemExit(0)
+PY2
+}
+
+adopt_cached_cloud_image_if_present() {
+  local workspace="$1"
+  local state_path volume_id address
+  state_path="$(workspace_state_path "${workspace}")"
+  volume_id="$(cloud_image_volume_id)"
+
+  if ! cloud_image_exists_on_proxmox; then
+    return 0
+  fi
+
+  while IFS= read -r address; do
+    [[ -z "${address}" ]] && continue
+    if tofu state list -state="${state_path}" 2>/dev/null | grep -Fx "${address}" >/dev/null; then
+      continue
+    fi
+    tofu import -state="${state_path}" -var-file="${TFVARS_FILE}" "${address}" "${volume_id}" >/dev/null 2>&1 || true
+  done < <(planned_cloud_image_addresses)
 }
 
 probe_inventory_ssh_round() {
@@ -1331,6 +1596,7 @@ run_bootstrap() {
   need ansible-playbook
   need ansible-inventory
   validate_tfvars
+  confirm_bootstrap_review "$(current_workspace_name)"
   load_proxmox_password
   ensure_rendered_outputs_current
 
@@ -2354,6 +2620,8 @@ case "${ACTION}" in
     workspace="$(current_workspace_name)"
     select_workspace "${workspace}"
     ensure_local_snippets_dir
+    load_proxmox_password
+    adopt_cached_cloud_image_if_present "${workspace}"
     print_selected_workspace "${workspace}"
     print_selected_image
     tofu apply -var-file="${TFVARS_FILE}" -auto-approve "$@"
@@ -2368,10 +2636,10 @@ case "${ACTION}" in
   bootstrap)
     bootstrap_rc=0
     run_bootstrap "$@" || bootstrap_rc=$?
-    refresh_kubeconfig_after_bootstrap_if_available
     if (( bootstrap_rc != 0 )); then
       exit "${bootstrap_rc}"
     fi
+    refresh_kubeconfig_after_bootstrap_if_available
     print_exports
     ;;
   upgrade)
@@ -2393,15 +2661,42 @@ case "${ACTION}" in
     fi
     log_step "Destroying cluster workspace: ${destroy_workspace}"
     log_info "Destroying using deployment snapshot: ${local_destroy_tfvars}"
-    if [[ -n "${destroy_state_arg}" ]]; then
-      tofu destroy -refresh=false "${destroy_state_arg}" -var-file="${local_destroy_tfvars}" -auto-approve "$@"
+    keep_cached_cloud_image="false"
+    if should_remove_cloud_image_on_destroy; then
+      log_info "Cached cloud image will also be removed from Proxmox."
     else
-      tofu destroy -refresh=false -var-file="${local_destroy_tfvars}" -auto-approve "$@"
+      keep_cached_cloud_image="true"
+      log_info "Keeping cached cloud image in Terraform state for reuse on the next apply."
+    fi
+    if [[ "${keep_cached_cloud_image}" == "true" ]]; then
+      destroy_targets=()
+      while IFS= read -r destroy_target; do
+        [[ -z "${destroy_target}" ]] && continue
+        destroy_targets+=("${destroy_target}")
+      done < <(destroy_targets_preserving_cloud_image "${destroy_workspace}" "${destroy_state_arg}")
+      if (( ${#destroy_targets[@]} > 0 )); then
+        if [[ -n "${destroy_state_arg}" ]]; then
+          tofu destroy -refresh=false "${destroy_state_arg}" -var-file="${local_destroy_tfvars}" -auto-approve "${destroy_targets[@]}" "$@"
+        else
+          tofu destroy -refresh=false -var-file="${local_destroy_tfvars}" -auto-approve "${destroy_targets[@]}" "$@"
+        fi
+      else
+        log_warn "No destroy targets were found besides the cached cloud image."
+      fi
+    else
+      if [[ -n "${destroy_state_arg}" ]]; then
+        tofu destroy -refresh=false "${destroy_state_arg}" -var-file="${local_destroy_tfvars}" -auto-approve "$@"
+      else
+        tofu destroy -refresh=false -var-file="${local_destroy_tfvars}" -auto-approve "$@"
+      fi
     fi
     restore_shared_cluster_ssh_key_from_history "${destroy_workspace}" || true
     prune_cluster_from_kubeconfig "${destroy_workspace}"
     cleanup_local_artifacts_for_workspace "${destroy_workspace}"
-    cleanup_destroyed_workspace_metadata "${destroy_workspace}"
+    if [[ "${keep_cached_cloud_image}" != "true" ]]; then
+      cleanup_destroyed_workspace_metadata "${destroy_workspace}"
+    fi
+    log_success "Destroy complete for workspace ${destroy_workspace}."
     ;;
   output)
     tf_init
