@@ -902,18 +902,22 @@ def choose_kubernetes_version() -> str:
 
 def summarize_nodes(nodes: dict[str, dict], kube_vip_ip: str | None) -> None:
     print(f"\n{style_prompt_label('Planned nodes')}:")
+    name_width = max((len(name) for name in nodes), default=len("vip"))
+    role_width = max((len(str(node["role"])) for node in nodes.values()), default=len("endpoint"))
+    ip_width = max((len(str(node["ip"])) for node in nodes.values()), default=len(kube_vip_ip or ""))
+
     for name, node in nodes.items():
         role_color = ANSI_GREEN if node["role"] == "controlplane" else ANSI_CYAN
         role_label = colorize(f"{node['role']:<12}", role_color)
-        node_name = colorize(f"{name:<8}", ANSI_MAGENTA)
-        node_ip = colorize(f"{node['ip']:<15}", ANSI_YELLOW)
+        node_name = colorize(f"{name:<{name_width}}", ANSI_MAGENTA)
+        node_ip = colorize(f"{node['ip']:<{ip_width}}", ANSI_YELLOW)
         vmid = colorize(str(node["vm_id"]), ANSI_CYAN)
         host_node = colorize(str(node["host_node"]), ANSI_CYAN)
-        print(f"  {node_name} {role_label} {node_ip} vmid={vmid} host={host_node}")
+        print(f"  {node_name} {colorize(f'{node['role']:<{role_width}}', role_color)} {node_ip} vmid={vmid} host={host_node}")
     if kube_vip_ip:
-        vip_name = colorize(f"{'vip':<8}", ANSI_MAGENTA)
-        vip_role = colorize(f"{'endpoint':<12}", ANSI_GREEN)
-        vip_ip = colorize(f"{kube_vip_ip:<15}", ANSI_YELLOW)
+        vip_name = colorize(f"{'vip':<{name_width}}", ANSI_MAGENTA)
+        vip_role = colorize(f"{'endpoint':<{role_width}}", ANSI_GREEN)
+        vip_ip = colorize(f"{kube_vip_ip:<{ip_width}}", ANSI_YELLOW)
         print(f"  {vip_name} {vip_role} {vip_ip}")
 
 
