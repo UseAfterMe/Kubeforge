@@ -10,10 +10,9 @@ Out of the box it handles:
 - cloud image bootstrapping with cloud-init
 - Kubernetes node preparation with Ansible
 - `kubeadm` + `containerd`
-- Cilium
-- MetalLB
+- Cilium with native LoadBalancer IPAM and L2 announcements
 - Traefik
-- optional HAProxy for multi-control-plane clusters
+- kube-vip for multi-control-plane API high availability
 - optional Proxmox CSI
 
 Ubuntu and Rocky Linux cloud images are both supported.
@@ -23,6 +22,8 @@ Ubuntu and Rocky Linux cloud images are both supported.
 - Interactive `configure` flow with curated Ubuntu and Rocky presets
 - VM/IP/VMID planning with subnet validation and safer config guardrails
 - Proxmox-managed NIC MAC addresses by default
+- kube-vip for lightweight multi-control-plane API high availability without a separate HAProxy VM
+- Cilium-native service load balancing without MetalLB
 - Automatic kubeconfig fetch, install, and merge into `~/.kube/config`
 - Cluster-aware `destroy` and `upgrade` workflows for multi-cluster workstations
 - Built-in `health` command for fast post-bootstrap validation
@@ -45,6 +46,7 @@ Required tools:
 
 Optional but recommended local tools:
 
+- `cilium` CLI for inspecting Cilium networking, policies, and LoadBalancer state
 - `ssh-copy-id` for `./deploy.sh proxmox-ssh-setup`
 - `kubectx` for faster multi-cluster context switching
 - `Freelens` for a local Kubernetes GUI
@@ -100,7 +102,7 @@ That flow gives you:
 - Waits for SSH reachability
 - Prepares nodes
 - Bootstraps kubeadm
-- Installs Cilium, MetalLB, Traefik, and optional Proxmox CSI
+- Installs Cilium, Cilium LoadBalancer IPAM / L2 announcements, Traefik, kube-vip for HA clusters, and optional Proxmox CSI
 - Uses the upstream Helm-based Proxmox CSI install path and creates a `proxmox` StorageClass for the selected Proxmox datastore
 - Fetches `out/kubeconfig`
 - Backs up and merges the cluster kubeconfig into `~/.kube/config` as soon as `out/kubeconfig` is available during bootstrap
@@ -109,7 +111,7 @@ That flow gives you:
 `health`
 
 - Uses the installed kubeconfig if available, otherwise `out/kubeconfig`
-- Validates nodes, core cluster services, and cluster API reachability
+- Validates nodes, core cluster services, cluster API reachability, Cilium LoadBalancer IP pools, and assigned LoadBalancer service IPs
 
 `upgrade`
 
@@ -190,8 +192,9 @@ After `apply`:
 - Single control plane:
   - Kubernetes API endpoint is the control-plane node IP
 - Two or more control planes:
-  - an HAProxy VM is created
-  - Kubernetes API endpoint points at the HAProxy IP
+  - kube-vip provides a floating virtual IP for the Kubernetes API
+  - Kubernetes API endpoint points at the kube-vip IP
+  - no separate HAProxy VM is required
 
 ## Destroy Behavior
 
@@ -219,8 +222,10 @@ It validates:
 - node readiness
 - cluster API access
 - `coredns`
-- `metallb-controller`
+- `cilium-operator`
 - `traefik`
+- Cilium LoadBalancer IP pool ranges and usage
+- LoadBalancer services and assigned external IPs
 - all pods across namespaces
 
 ## Troubleshooting
@@ -257,7 +262,7 @@ The guest package alone is not enough. The Proxmox VM option must also enable th
 
 The deployer writes explicit DNS configuration and bounds package-manager timeouts, but mirror issues can still happen. Re-running `bootstrap` after connectivity stabilizes is usually enough.
 
-### MetalLB address pool validation fails
+### Cilium LoadBalancer IP pool validation fails
 
 Use full IPv4 range syntax in the rendered config. The deployer now normalizes shorthand like:
 
@@ -294,6 +299,7 @@ If you changed configuration and want to rerun bootstrap cleanly, refresh the re
 
 If you want a smoother day-to-day operator experience, these are the most useful optional tools to add:
 
+- `cilium` CLI for Cilium networking and service IP troubleshooting
 - `Freelens` for a desktop Kubernetes UI
 - `kubectx` for fast context switching between clusters
 - `k9s` for terminal-based Kubernetes inspection
@@ -303,6 +309,8 @@ If you want a smoother day-to-day operator experience, these are the most useful
 On macOS:
 
 ```bash
+## Follow the official Cilium CLI install instructions:
+## https://docs.cilium.io/en/stable/gettingstarted/k8s-install-default/
 brew install --cask freelens
 brew install kubectx
 brew install k9s
@@ -311,6 +319,7 @@ GOBIN="$HOME/.local/bin" go install github.com/sergelogvinov/proxmox-csi-plugin/
 
 On Linux:
 
+- install the `cilium` CLI using the official Cilium install instructions
 - install `kubectx` and `k9s` from your distro package manager when available
 - install `Freelens` from the official DEB, RPM, Flatpak, or Snap packages
 - install `pvecsictl` with Go:

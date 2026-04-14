@@ -14,15 +14,15 @@ stop_bootstrap_background_monitor() {
 }
 
 handle_interrupt() {
-  echo
+  printf '\n' >&2
   if [[ -n "${ACTIVE_CHILD_PID}" ]]; then
     kill "${ACTIVE_CHILD_PID}" >/dev/null 2>&1 || true
     wait "${ACTIVE_CHILD_PID}" 2>/dev/null || true
     ACTIVE_CHILD_PID=""
   fi
   stop_bootstrap_background_monitor
-  echo "Interrupted."
-  echo "No further deployment actions will be taken."
+  log_warn "Interrupted."
+  log_warn "No further deployment actions will be taken."
   exit 130
 }
 
@@ -54,18 +54,48 @@ PENDING_SSH_HOSTS=()
 
 COLOR_RESET=""
 COLOR_CYAN=""
+COLOR_BLUE=""
 COLOR_GREEN=""
 COLOR_YELLOW=""
+COLOR_RED=""
 COLOR_DIM=""
+COLOR_BOLD=""
 
 init_colors() {
   if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
     COLOR_RESET=$'\033[0m'
     COLOR_CYAN=$'\033[36m'
+    COLOR_BLUE=$'\033[34m'
     COLOR_GREEN=$'\033[32m'
     COLOR_YELLOW=$'\033[33m'
+    COLOR_RED=$'\033[31m'
     COLOR_DIM=$'\033[2m'
+    COLOR_BOLD=$'\033[1m'
   fi
+}
+
+log_step() {
+  printf '%s==>%s %s\n' "${COLOR_CYAN}${COLOR_BOLD}" "${COLOR_RESET}" "$*"
+}
+
+log_success() {
+  printf '%s%s%s\n' "${COLOR_GREEN}${COLOR_BOLD}" "$*" "${COLOR_RESET}"
+}
+
+log_info() {
+  printf '%s%s%s\n' "${COLOR_BLUE}" "$*" "${COLOR_RESET}"
+}
+
+log_warn() {
+  printf '%s%s%s\n' "${COLOR_YELLOW}${COLOR_BOLD}" "$*" "${COLOR_RESET}" >&2
+}
+
+log_error() {
+  printf '%s%s%s\n' "${COLOR_RED}${COLOR_BOLD}" "$*" "${COLOR_RESET}" >&2
+}
+
+log_item() {
+  printf '  %s-%s %s\n' "${COLOR_DIM}" "${COLOR_RESET}" "$*"
 }
 
 init_colors
@@ -92,38 +122,113 @@ platform_id() {
 }
 
 print_optional_tool_suggestions() {
+  local platform
+  platform="$(platform_id)"
+
   echo
-  echo "Optional tools you might want:"
+  log_info "Optional tools you might want:"
   echo
 
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    echo "- Freelens:"
-    echo "  brew install --cask freelens"
+  optional_tool_entry "Cilium CLI" "cilium" "Troubleshoot and inspect Cilium networking and LoadBalancer state." \
+    "https://docs.cilium.io/en/stable/gettingstarted/k8s-install-default/" \
+    "$(optional_tool_install_hint "${platform}" "cilium")"
+  optional_tool_entry "kubectx" "kubectx" "Switch quickly between Kubernetes contexts on multi-cluster workstations." \
+    "https://github.com/ahmetb/kubectx" \
+    "$(optional_tool_install_hint "${platform}" "kubectx")"
+  optional_tool_entry "k9s" "k9s" "Inspect workloads, logs, and events from the terminal." \
+    "https://k9scli.io/" \
+    "$(optional_tool_install_hint "${platform}" "k9s")"
+  optional_tool_entry "Freelens" "freelens" "Desktop Kubernetes UI for cluster inspection." \
+    "https://freelensapp.github.io/" \
+    "$(optional_tool_install_hint "${platform}" "freelens")"
+  optional_tool_entry "pvecsictl" "pvecsictl" "Used to move local Proxmox CSI volumes between Proxmox nodes." \
+    "https://github.com/sergelogvinov/proxmox-csi-plugin" \
+    "$(optional_tool_install_hint "${platform}" "pvecsictl")"
+}
+
+optional_tool_install_hint() {
+  local platform="$1"
+  local tool="$2"
+
+  case "${platform}:${tool}" in
+    macos:cilium)
+      printf '%s\n' "Follow the official Cilium CLI install instructions."
+      ;;
+    macos:kubectx)
+      printf '%s\n' "brew install kubectx"
+      ;;
+    macos:k9s)
+      printf '%s\n' "brew install k9s"
+      ;;
+    macos:freelens)
+      printf '%s\n' "brew install --cask freelens"
+      ;;
+    macos:pvecsictl)
+      printf '%s\n' "Prerequisite: Go. Then run: GOBIN=\"${HOME}/.local/bin\" go install github.com/sergelogvinov/proxmox-csi-plugin/cmd/pvecsictl@latest"
+      ;;
+    apt:cilium|dnf:cilium|unknown:cilium)
+      printf '%s\n' "Follow the official Cilium CLI install instructions."
+      ;;
+    apt:kubectx)
+      printf '%s\n' "Install from your distro package manager when available, or use the upstream project."
+      ;;
+    dnf:kubectx|unknown:kubectx)
+      printf '%s\n' "Install from your distro package manager when available, or use the upstream project."
+      ;;
+    apt:k9s|dnf:k9s|unknown:k9s)
+      printf '%s\n' "Install from your distro package manager when available, or use the official project."
+      ;;
+    apt:freelens|dnf:freelens|unknown:freelens)
+      printf '%s\n' "Use the official DEB, RPM, Flatpak, or Snap packages."
+      ;;
+    apt:pvecsictl|dnf:pvecsictl|unknown:pvecsictl)
+      printf '%s\n' "Prerequisite: Go. Then run: GOBIN=\"${HOME}/.local/bin\" go install github.com/sergelogvinov/proxmox-csi-plugin/cmd/pvecsictl@latest"
+      ;;
+    *)
+      printf '%s\n' "See the official project documentation."
+      ;;
+  esac
+}
+
+optional_tool_installed() {
+  local tool="$1"
+
+  case "${tool}" in
+    freelens)
+      if command -v freelens >/dev/null 2>&1 || command -v Freelens >/dev/null 2>&1; then
+        return 0
+      fi
+      [[ -d "/Applications/Freelens.app" || -d "${HOME}/Applications/Freelens.app" ]]
+      ;;
+    *)
+      command -v "${tool}" >/dev/null 2>&1
+      ;;
+  esac
+}
+
+optional_tool_entry() {
+  local label="$1"
+  local command_name="$2"
+  local description="$3"
+  local link="$4"
+  local install_hint="$5"
+  local status_text status_color
+
+  if optional_tool_installed "${command_name}"; then
+    status_text="installed"
+    status_color="${COLOR_GREEN}"
   else
-    echo "- Freelens:"
-    echo "  https://freelensapp.github.io/"
+    status_text="not installed"
+    status_color="${COLOR_YELLOW}"
   fi
 
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    echo "- kubectx:"
-    echo "  brew install kubectx"
+  if [[ -n "${status_color}" ]]; then
+    log_item "${label}: ${description} [${status_color}${status_text}${COLOR_RESET}]"
   else
-    echo "- kubectx:"
-    echo "  https://github.com/ahmetb/kubectx"
+    log_item "${label}: ${description} [${status_text}]"
   fi
-
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    echo "- k9s:"
-    echo "  brew install k9s"
-  else
-    echo "- k9s:"
-    echo "  https://k9scli.io/"
-  fi
-
-  echo "- pvecsictl:"
-  echo "  Used to move local Proxmox CSI volumes between Proxmox nodes."
-  echo "  Prerequisite: Go"
-  echo "  https://github.com/sergelogvinov/proxmox-csi-plugin"
+  echo "  ${install_hint}"
+  echo "  ${link}"
 }
 
 prompt_yes_no() {
@@ -966,14 +1071,14 @@ print_selected_image() {
   image_url="$(read_tfvar cloud_image_url)"
   image_file_name="$(read_tfvar cloud_image_file_name)"
 
-  echo "==> Selected guest OS: ${os_family} ${os_version}"
-  echo "==> Cloud image file: ${image_file_name}"
-  echo "==> Cloud image URL:  ${image_url}"
+  log_step "Selected guest OS: ${os_family} ${os_version}"
+  log_info "Cloud image file: ${image_file_name}"
+  log_info "Cloud image URL:  ${image_url}"
 }
 
 print_selected_workspace() {
   local workspace="$1"
-  echo "==> Selected cluster workspace: ${workspace}"
+  log_step "Selected cluster workspace: ${workspace}"
 }
 
 probe_inventory_ssh_round() {
@@ -1403,7 +1508,6 @@ if kubernetes_versions:
 
 chart_checks = [
     ("cilium_chart_version", "Cilium chart", "https://helm.cilium.io/index.yaml", "cilium", module.DEFAULT_CHART_VERSIONS["cilium"]),
-    ("metallb_chart_version", "MetalLB chart", "https://metallb.github.io/metallb/index.yaml", "metallb", module.DEFAULT_CHART_VERSIONS["metallb"]),
     ("traefik_chart_version", "Traefik chart", "https://traefik.github.io/charts/index.yaml", "traefik", module.DEFAULT_CHART_VERSIONS["traefik"]),
 ]
 
@@ -1748,6 +1852,12 @@ PY
   rm -f "${source_json_path}"
 }
 
+render_kubeconfig_yaml() {
+  local source_path="$1"
+  local target_path="$2"
+  kubectl --kubeconfig="${source_path}" config view --raw -o yaml > "${target_path}"
+}
+
 merge_kubeconfig_files() {
   local existing_path="$1"
   local incoming_path="$2"
@@ -1798,7 +1908,7 @@ PY
 
 prune_cluster_from_kubeconfig() {
   local workspace="$1"
-  local target_path cluster_name context_name legacy_user_name cluster_user_name
+  local target_path cluster_name context_name legacy_user_name cluster_user_name tmp_json tmp_yaml
 
   target_path="${HOME}/.kube/config"
   if [[ ! -f "${target_path}" ]]; then
@@ -1809,18 +1919,21 @@ prune_cluster_from_kubeconfig() {
   context_name="kubernetes-admin@${cluster_name}"
   legacy_user_name="kubernetes-admin"
   cluster_user_name="kubernetes-admin@${cluster_name}"
+  tmp_json="$(mktemp)"
+  tmp_yaml="$(mktemp)"
 
-  if ! python3 - "${target_path}" "${cluster_name}" "${context_name}" "${legacy_user_name}" "${cluster_user_name}" <<'PY'
+  if ! python3 - "${target_path}" "${tmp_json}" "${cluster_name}" "${context_name}" "${legacy_user_name}" "${cluster_user_name}" <<'PY'
 import json
 import subprocess
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-cluster_name = sys.argv[2]
-context_name = sys.argv[3]
-legacy_user_name = sys.argv[4]
-cluster_user_name = sys.argv[5]
+output_path = Path(sys.argv[2])
+cluster_name = sys.argv[3]
+context_name = sys.argv[4]
+legacy_user_name = sys.argv[5]
+cluster_user_name = sys.argv[6]
 
 raw = subprocess.run(
     ["kubectl", "--kubeconfig", str(path), "config", "view", "--raw", "-o", "json"],
@@ -1868,16 +1981,27 @@ data["users"] = users_to_keep
 if current_context in removed_contexts:
     data["current-context"] = contexts_to_keep[0]["name"] if contexts_to_keep else ""
 
-path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+output_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
   then
+    rm -f "${tmp_json}" "${tmp_yaml}"
     echo "Warning: unable to prune ${cluster_name} from ${target_path}. Review the kubeconfig manually." >&2
     return 0
   fi
+
+  if ! render_kubeconfig_yaml "${tmp_json}" "${tmp_yaml}"; then
+    rm -f "${tmp_json}" "${tmp_yaml}"
+    echo "Warning: unable to render ${cluster_name} kubeconfig back to YAML after pruning. Review ${target_path} manually." >&2
+    return 0
+  fi
+
+  cp "${tmp_yaml}" "${target_path}"
+  chmod 600 "${target_path}"
+  rm -f "${tmp_json}" "${tmp_yaml}"
 }
 
 install_kubeconfig() {
-  local target_dir target_path backup_path merge_tmp merged_config_tmp normalized_source_path
+  local target_dir target_path backup_path merge_tmp merged_config_tmp normalized_source_path final_source_path final_yaml_path
   target_dir="${HOME}/.kube"
   target_path="${target_dir}/config"
 
@@ -1891,6 +2015,7 @@ install_kubeconfig() {
 
   merge_tmp="$(mktemp -d)"
   normalized_source_path="${merge_tmp}/incoming-kubeconfig.json"
+  final_yaml_path="${merge_tmp}/final-kubeconfig.yaml"
 
   if command -v kubectl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     normalize_kubeconfig_for_merge "${KUBECONFIG_PATH}" "${normalized_source_path}"
@@ -1898,6 +2023,7 @@ install_kubeconfig() {
     cp "${KUBECONFIG_PATH}" "${normalized_source_path}"
   fi
 
+  final_source_path="${normalized_source_path}"
   if [[ -f "${target_path}" ]]; then
     backup_path="${target_path}.bak.$(date +%Y%m%d%H%M%S)"
     cp "${target_path}" "${backup_path}"
@@ -1906,15 +2032,22 @@ install_kubeconfig() {
     if command -v kubectl >/dev/null 2>&1; then
       merged_config_tmp="${merge_tmp}/config"
       merge_kubeconfig_files "${backup_path}" "${normalized_source_path}" "${merged_config_tmp}"
-      cp "${merged_config_tmp}" "${target_path}"
-      echo "Merged kubeconfig into ${target_path}"
+      final_source_path="${merged_config_tmp}"
     else
-      cp "${normalized_source_path}" "${target_path}"
-      echo "Installed kubeconfig to ${target_path}"
+      final_source_path="${normalized_source_path}"
       echo "kubectl is not installed, so the kubeconfig could not be merged automatically."
     fi
+  fi
+
+  if command -v kubectl >/dev/null 2>&1 && render_kubeconfig_yaml "${final_source_path}" "${final_yaml_path}"; then
+    cp "${final_yaml_path}" "${target_path}"
   else
-    cp "${normalized_source_path}" "${target_path}"
+    cp "${final_source_path}" "${target_path}"
+  fi
+
+  if [[ -f "${backup_path:-}" ]]; then
+    echo "Merged kubeconfig into ${target_path}"
+  else
     echo "Installed kubeconfig to ${target_path}"
   fi
 
@@ -2037,35 +2170,168 @@ health_checks() {
     exit 1
   fi
 
-  echo "==> Using KUBECONFIG=${KUBECONFIG}"
+  log_step "Using KUBECONFIG=${KUBECONFIG}"
   echo
 
-  echo "==> kubectl get nodes -o wide"
+  log_step "kubectl get nodes -o wide"
   kubectl get nodes -o wide
   echo
-  echo "==> kubectl wait --for=condition=Ready nodes --all --timeout=60s"
+  log_step "kubectl wait --for=condition=Ready nodes --all --timeout=60s"
   kubectl wait --for=condition=Ready nodes --all --timeout=60s
   echo
-  echo "==> kubectl get pods -A"
+  log_step "kubectl get pods -A"
   kubectl get pods -A
   echo
-  echo "==> kubectl wait -n kube-system --for=condition=Available deployment/coredns --timeout=120s"
+  log_step "kubectl wait -n kube-system --for=condition=Available deployment/coredns --timeout=120s"
   kubectl wait -n kube-system --for=condition=Available deployment/coredns --timeout=120s
   echo
-  echo "==> kubectl wait -n metallb-system --for=condition=Available deployment/metallb-controller --timeout=120s"
-  kubectl wait -n metallb-system --for=condition=Available deployment/metallb-controller --timeout=120s
+  log_step "kubectl wait -n kube-system --for=condition=Available deployment/cilium-operator --timeout=120s"
+  kubectl wait -n kube-system --for=condition=Available deployment/cilium-operator --timeout=120s
   echo
-  echo "==> kubectl wait -n traefik --for=condition=Available deployment/traefik --timeout=120s"
+  log_step "kubectl wait -n traefik --for=condition=Available deployment/traefik --timeout=120s"
   kubectl wait -n traefik --for=condition=Available deployment/traefik --timeout=120s
 
   echo
-  echo "==> kubectl get pods -A -o wide"
+  log_step "Cilium LoadBalancer IP pools"
+  python3 - <<'PY'
+import json
+import subprocess
+import sys
+
+raw = subprocess.run(
+    ["kubectl", "get", "ciliumloadbalancerippools", "-A", "-o", "json"],
+    capture_output=True,
+    text=True,
+    check=True,
+).stdout
+data = json.loads(raw)
+
+def condition_message(conditions, condition_type):
+    for condition in conditions or []:
+        if condition.get("type") == condition_type:
+            return str(condition.get("message", ""))
+    return ""
+
+pools = []
+for item in data.get("items", []):
+    metadata = item.get("metadata") or {}
+    spec = item.get("spec") or {}
+    blocks = spec.get("blocks") or []
+    conditions = (item.get("status") or {}).get("conditions") or []
+    rendered_blocks = []
+    for block in blocks:
+        start = block.get("start")
+        stop = block.get("stop")
+        if start and stop:
+            rendered_blocks.append(f"{start}-{stop}")
+        elif "cidr" in block:
+            rendered_blocks.append(str(block.get("cidr")))
+    pools.append((
+        "cluster",
+        metadata.get("name", ""),
+        ", ".join(rendered_blocks) or "<none>",
+        condition_message(conditions, "cilium.io/IPsTotal") or "?",
+        condition_message(conditions, "cilium.io/IPsUsed") or "?",
+        condition_message(conditions, "cilium.io/IPsAvailable") or "?",
+        "yes" if spec.get("disabled") else "no",
+    ))
+
+if not pools:
+    print("No Cilium LoadBalancer IP pools found.")
+else:
+    namespace_width = max(len("SCOPE"), max(len(row[0]) for row in pools))
+    name_width = max(len("NAME"), max(len(row[1]) for row in pools))
+    range_width = max(len("RANGE"), max(len(row[2]) for row in pools))
+    total_width = max(len("TOTAL"), max(len(row[3]) for row in pools))
+    used_width = max(len("USED"), max(len(row[4]) for row in pools))
+    available_width = max(len("AVAILABLE"), max(len(row[5]) for row in pools))
+    disabled_width = max(len("DISABLED"), max(len(row[6]) for row in pools))
+    print(
+        f"{'SCOPE':<{namespace_width}}  "
+        f"{'NAME':<{name_width}}  "
+        f"{'RANGE':<{range_width}}  "
+        f"{'TOTAL':<{total_width}}  "
+        f"{'USED':<{used_width}}  "
+        f"{'AVAILABLE':<{available_width}}  "
+        f"{'DISABLED':<{disabled_width}}"
+    )
+    for namespace, name, ip_range, total, used, available, disabled in pools:
+        print(
+            f"{namespace:<{namespace_width}}  "
+            f"{name:<{name_width}}  "
+            f"{ip_range:<{range_width}}  "
+            f"{total:<{total_width}}  "
+            f"{used:<{used_width}}  "
+            f"{available:<{available_width}}  "
+            f"{disabled:<{disabled_width}}"
+        )
+
+print()
+print("LoadBalancer services")
+
+raw = subprocess.run(
+    ["kubectl", "get", "svc", "-A", "-o", "json"],
+    capture_output=True,
+    text=True,
+    check=True,
+).stdout
+data = json.loads(raw)
+
+services = []
+for item in data.get("items", []):
+    spec = item.get("spec") or {}
+    if spec.get("type") != "LoadBalancer":
+        continue
+    status = item.get("status") or {}
+    lb = status.get("loadBalancer") or {}
+    ingresses = lb.get("ingress") or []
+    external = ", ".join(
+        str(entry.get("ip") or entry.get("hostname"))
+        for entry in ingresses
+        if entry.get("ip") or entry.get("hostname")
+    ) or "<pending>"
+    services.append((
+        item.get("metadata", {}).get("namespace", ""),
+        item.get("metadata", {}).get("name", ""),
+        spec.get("type", ""),
+        external,
+        ", ".join(str(port.get("port")) for port in (spec.get("ports") or [])),
+    ))
+
+if not services:
+    print("No LoadBalancer services found.")
+    sys.exit(0)
+
+namespace_width = max(len("NAMESPACE"), max(len(row[0]) for row in services))
+name_width = max(len("NAME"), max(len(row[1]) for row in services))
+type_width = max(len("TYPE"), max(len(row[2]) for row in services))
+external_width = max(len("EXTERNAL-IP"), max(len(row[3]) for row in services))
+
+print(
+    f"{'NAMESPACE':<{namespace_width}}  "
+    f"{'NAME':<{name_width}}  "
+    f"{'TYPE':<{type_width}}  "
+    f"{'EXTERNAL-IP':<{external_width}}  "
+    f"PORTS"
+)
+for namespace, name, svc_type, external, ports in services:
+    print(
+        f"{namespace:<{namespace_width}}  "
+        f"{name:<{name_width}}  "
+        f"{svc_type:<{type_width}}  "
+        f"{external:<{external_width}}  "
+        f"{ports}"
+    )
+PY
+
+  echo
+  log_step "kubectl get pods -A -o wide"
   kubectl get pods -A -o wide
   echo
-  echo "==> kubectl cluster-info"
+  log_step "kubectl cluster-info"
   kubectl cluster-info
   echo
-  echo "Health checks passed."
+  log_success "Health checks passed."
 }
 
 case "${ACTION}" in
@@ -2125,8 +2391,8 @@ case "${ACTION}" in
       echo "Run ./deploy.sh apply first or restore the last applied tfvars snapshot for ${destroy_workspace}."
       exit 1
     fi
-    echo "==> Destroying cluster workspace: ${destroy_workspace}"
-    echo "==> Destroying using deployment snapshot: ${local_destroy_tfvars}"
+    log_step "Destroying cluster workspace: ${destroy_workspace}"
+    log_info "Destroying using deployment snapshot: ${local_destroy_tfvars}"
     if [[ -n "${destroy_state_arg}" ]]; then
       tofu destroy -refresh=false "${destroy_state_arg}" -var-file="${local_destroy_tfvars}" -auto-approve "$@"
     else

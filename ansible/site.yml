@@ -33,8 +33,8 @@
         name: containerd
         state: restarted
 
-- name: Prepare workers and haproxy
-  hosts: "haproxy:kube_workers"
+- name: Prepare workers
+  hosts: kube_workers
   become: true
   gather_facts: false
   strategy: free
@@ -53,40 +53,26 @@
         name: containerd
         state: restarted
 
-- name: Install HAProxy for multi-control-plane API access
-  hosts: haproxy
-  become: true
-  gather_facts: false
-  tasks:
-    - name: Install haproxy
-      ansible.builtin.package:
-        name: haproxy
-        state: present
-
-    - name: Configure haproxy
-      ansible.builtin.template:
-        src: haproxy.cfg.j2
-        dest: /etc/haproxy/haproxy.cfg
-        mode: "0644"
-      notify: Restart haproxy
-
-    - name: Ensure haproxy is enabled
-      ansible.builtin.service:
-        name: haproxy
-        enabled: true
-        state: started
-
-  handlers:
-    - name: Restart haproxy
-      ansible.builtin.service:
-        name: haproxy
-        state: restarted
-
 - name: Bootstrap first control plane
   hosts: bootstrap_control_plane
   become: true
   gather_facts: false
   tasks:
+    - name: Detect default network interface for kube-vip
+      ansible.builtin.shell: ip -o route show to default | awk '{print $5; exit}'
+      args:
+        executable: /bin/bash
+      register: kube_vip_interface
+      changed_when: false
+      when: groups['kube_control_plane'] | length > 1
+
+    - name: Ensure Kubernetes manifests directory exists before kube-vip bootstrap
+      ansible.builtin.file:
+        path: /etc/kubernetes/manifests
+        state: directory
+        mode: "0755"
+      when: groups['kube_control_plane'] | length > 1
+
     - name: Render kubeadm init config
       ansible.builtin.template:
         src: kubeadm-init-config.yaml.j2
@@ -130,6 +116,16 @@
         - not admin_conf_stat.stat.exists
         - stale_etcd_dir_stat.stat.exists
 
+    - name: Render bootstrap kube-vip static pod manifest
+      ansible.builtin.template:
+        src: kube-vip.yaml.j2
+        dest: /etc/kubernetes/manifests/kube-vip.yaml
+        mode: "0644"
+      vars:
+        kube_vip_interface_name: "{{ kube_vip_interface.stdout | trim }}"
+        kube_vip_kubeconfig_host_path: "{{ '/etc/kubernetes/super-admin.conf' if not admin_conf_stat.stat.exists else '/etc/kubernetes/admin.conf' }}"
+      when: groups['kube_control_plane'] | length > 1
+
     - name: Initialize Kubernetes control plane
       ansible.builtin.command: kubeadm init --config /root/kubeadm-init.yaml
       when: not admin_conf_stat.stat.exists
@@ -166,6 +162,16 @@
         group: "{{ ansible_user }}"
         mode: "0600"
         remote_src: true
+
+    - name: Render steady-state kube-vip static pod manifest on bootstrap control plane
+      ansible.builtin.template:
+        src: kube-vip.yaml.j2
+        dest: /etc/kubernetes/manifests/kube-vip.yaml
+        mode: "0644"
+      vars:
+        kube_vip_interface_name: "{{ kube_vip_interface.stdout | trim }}"
+        kube_vip_kubeconfig_host_path: "/etc/kubernetes/admin.conf"
+      when: groups['kube_control_plane'] | length > 1
 
     - name: Install Helm binary
       ansible.builtin.shell: |
@@ -217,6 +223,11 @@
   gather_facts: false
   strategy: free
   tasks:
+    - name: Wait for SSH on additional control planes
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        timeout: 300
+
     - name: Check whether node already joined
       ansible.builtin.stat:
         path: /etc/kubernetes/kubelet.conf
@@ -236,6 +247,31 @@
         - not kubelet_conf_stat.stat.exists
         - groups['kube_control_plane'] | length > 1
 
+    - name: Detect default network interface for kube-vip
+      ansible.builtin.shell: ip -o route show to default | awk '{print $5; exit}'
+      args:
+        executable: /bin/bash
+      register: kube_vip_interface
+      changed_when: false
+      when: groups['kube_control_plane'] | length > 1
+
+    - name: Ensure Kubernetes manifests directory exists for kube-vip
+      ansible.builtin.file:
+        path: /etc/kubernetes/manifests
+        state: directory
+        mode: "0755"
+      when: groups['kube_control_plane'] | length > 1
+
+    - name: Render kube-vip static pod manifest on additional control planes
+      ansible.builtin.template:
+        src: kube-vip.yaml.j2
+        dest: /etc/kubernetes/manifests/kube-vip.yaml
+        mode: "0644"
+      vars:
+        kube_vip_interface_name: "{{ kube_vip_interface.stdout | trim }}"
+        kube_vip_kubeconfig_host_path: "/etc/kubernetes/admin.conf"
+      when: groups['kube_control_plane'] | length > 1
+
 - name: Join worker nodes
   hosts: kube_workers
   become: true
@@ -243,6 +279,11 @@
   strategy: free
   ignore_unreachable: true
   tasks:
+    - name: Wait for SSH on worker nodes
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        timeout: 300
+
     - name: Check whether worker already joined
       ansible.builtin.stat:
         path: /etc/kubernetes/kubelet.conf
@@ -274,10 +315,16 @@
         dest: /root/cilium-values.yaml
         mode: "0600"
 
-    - name: Render MetalLB address pool manifest
+    - name: Render Cilium LoadBalancer IP pool manifest
       ansible.builtin.template:
-        src: metallb-pool.yaml.j2
-        dest: /root/metallb-pool.yaml
+        src: cilium-load-balancer-ip-pool.yaml.j2
+        dest: /root/cilium-load-balancer-ip-pool.yaml
+        mode: "0600"
+
+    - name: Render Cilium L2 announcement policy
+      ansible.builtin.template:
+        src: cilium-l2-announcement-policy.yaml.j2
+        dest: /root/cilium-l2-announcement-policy.yaml
         mode: "0600"
 
     - name: Render Traefik values
@@ -297,7 +344,6 @@
       ansible.builtin.shell: |
         set -euo pipefail
         /usr/local/bin/helm repo add cilium https://helm.cilium.io
-        /usr/local/bin/helm repo add metallb https://metallb.github.io/metallb
         /usr/local/bin/helm repo add traefik https://traefik.github.io/charts
         /usr/local/bin/helm repo update
       args:
@@ -315,74 +361,24 @@
       ansible.builtin.command: kubectl -n kube-system rollout status daemonset/cilium --timeout=10m
       changed_when: false
 
+    - name: Wait for Cilium operator rollout
+      ansible.builtin.command: kubectl -n kube-system rollout status deployment/cilium-operator --timeout=10m
+      changed_when: false
+
     - name: Wait for all joined nodes to become ready after Cilium install
       ansible.builtin.command: kubectl wait --for=condition=Ready nodes --all --timeout=10m
       changed_when: false
 
-    - name: Install MetalLB
-      ansible.builtin.command: >-
-        /usr/local/bin/helm upgrade --install metallb metallb/metallb
-        --namespace metallb-system
-        --create-namespace
-        --version {{ metallb_chart_version }}
-
-    - name: Wait for MetalLB controller
-      block:
-        - name: Wait for MetalLB controller rollout
-          ansible.builtin.command: kubectl -n metallb-system rollout status deployment/metallb-controller --timeout=10m
-          changed_when: false
-      rescue:
-        - name: Show MetalLB pods
-          ansible.builtin.command: kubectl -n metallb-system get pods -o wide
-          changed_when: false
-          ignore_errors: true
-
-        - name: Show MetalLB deployment
-          ansible.builtin.command: kubectl -n metallb-system describe deployment metallb-controller
-          changed_when: false
-          ignore_errors: true
-
-        - name: Show MetalLB ReplicaSet
-          ansible.builtin.shell: kubectl -n metallb-system describe rs -l app.kubernetes.io/component=controller
-          args:
-            executable: /bin/bash
-          changed_when: false
-          ignore_errors: true
-
-        - name: Show MetalLB events
-          ansible.builtin.command: kubectl -n metallb-system get events --sort-by=.lastTimestamp
-          changed_when: false
-          ignore_errors: true
-
-        - name: Fail after collecting MetalLB diagnostics
-          ansible.builtin.fail:
-            msg: "MetalLB controller rollout failed; see the diagnostic output above."
-
-    - name: Wait for MetalLB webhook service endpoints
-      ansible.builtin.command: >-
-        kubectl -n metallb-system get endpoints metallb-webhook-service
-        -o jsonpath={.subsets[*].addresses[*].ip}
-      register: metallb_webhook_endpoints
-      retries: 20
-      delay: 6
-      until: metallb_webhook_endpoints.stdout | trim | length > 0
-      changed_when: false
-
-    - name: Wait for MetalLB controller pod readiness
-      ansible.builtin.command: >-
-        kubectl -n metallb-system wait
-        --for=condition=Ready
-        pod
-        -l app.kubernetes.io/component=controller
-        --timeout=5m
-      changed_when: false
-
-    - name: Apply MetalLB address pool
-      ansible.builtin.command: kubectl apply -f /root/metallb-pool.yaml
-      register: metallb_pool_apply_result
+    - name: Apply Cilium LoadBalancer IP pool
+      ansible.builtin.command: kubectl apply -f /root/cilium-load-balancer-ip-pool.yaml
+      register: cilium_load_balancer_ip_pool_apply_result
       retries: 10
       delay: 15
-      until: metallb_pool_apply_result is succeeded
+      until: cilium_load_balancer_ip_pool_apply_result is succeeded
+      changed_when: false
+
+    - name: Apply Cilium L2 announcement policy
+      ansible.builtin.command: kubectl apply -f /root/cilium-l2-announcement-policy.yaml
       changed_when: false
 
     - name: Install Traefik

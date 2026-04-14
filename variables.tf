@@ -172,27 +172,46 @@ variable "service_cidr" {
   default     = "10.96.0.0/12"
 }
 
-variable "metallb_address_pools" {
-  description = "MetalLB address pools"
+variable "load_balancer_ip_pools" {
+  description = "IP pools used by Cilium LB IPAM for LoadBalancer services"
   type        = list(string)
+}
+
+variable "cilium_load_balancer_pool_name" {
+  description = "Name of the Cilium LoadBalancer IP pool"
+  type        = string
+  default     = "default"
+}
+
+variable "cilium_l2_policy_name" {
+  description = "Name of the Cilium L2 announcement policy"
+  type        = string
+  default     = "default"
 }
 
 variable "cilium_chart_version" {
   description = "Cilium Helm chart version"
   type        = string
-  default     = "1.17.4"
-}
-
-variable "metallb_chart_version" {
-  description = "MetalLB Helm chart version"
-  type        = string
-  default     = "0.15.2"
+  default     = "1.19.2"
 }
 
 variable "traefik_chart_version" {
   description = "Traefik Helm chart version"
   type        = string
-  default     = "37.0.0"
+  default     = "39.0.7"
+}
+
+variable "kube_vip_ip" {
+  description = "Virtual IP used by kube-vip for the Kubernetes API when more than one control plane is deployed"
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "kube_vip_version" {
+  description = "kube-vip container image tag"
+  type        = string
+  default     = "v1.0.1"
 }
 
 variable "install_proxmox_csi" {
@@ -231,23 +250,4 @@ variable "nodes" {
     condition     = alltrue([for _, node in var.nodes : contains(["controlplane", "worker"], node.role)])
     error_message = "Node role must be either controlplane or worker."
   }
-}
-
-variable "haproxy_node" {
-  description = "Optional HAProxy VM used as a control-plane endpoint when more than one control plane is deployed"
-  type = object({
-    name        = string
-    host_node   = string
-    role        = string
-    vm_id       = number
-    ip          = string
-    mac_address = optional(string)
-    vlan_id     = optional(number)
-    cores       = number
-    memory_mb   = number
-    disk_gb     = number
-    dns_name    = optional(string)
-  })
-  default  = null
-  nullable = true
 }

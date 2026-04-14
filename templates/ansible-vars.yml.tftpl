@@ -13,8 +13,9 @@ dns_domain: "${dns_domain != null ? dns_domain : ""}"
 pod_cidr: ${pod_cidr}
 service_cidr: ${service_cidr}
 control_plane_count: ${control_plane_count}
+kube_vip_ip: "${kube_vip_ip != null ? kube_vip_ip : ""}"
+kube_vip_version: ${kube_vip_version}
 cilium_chart_version: ${cilium_chart_version}
-metallb_chart_version: ${metallb_chart_version}
 traefik_chart_version: ${traefik_chart_version}
 install_qemu_guest_agent: ${install_qemu_guest_agent}
 enable_rocky_cockpit: ${enable_rocky_cockpit}
@@ -29,7 +30,9 @@ dns_servers:
 %{ for server in dns_servers ~}
   - ${server}
 %{ endfor ~}
-metallb_address_pools:
-%{ for pool in metallb_address_pools ~}
+load_balancer_ip_pools:
+%{ for pool in load_balancer_ip_pools ~}
   - ${pool}
 %{ endfor ~}
+cilium_load_balancer_pool_name: ${cilium_load_balancer_pool_name}
+cilium_l2_policy_name: ${cilium_l2_policy_name}

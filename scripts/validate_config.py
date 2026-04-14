@@ -36,7 +36,7 @@ def normalize_cloud_image_file_name(value: str | None) -> str | None:
     return file_name or None
 
 
-def normalize_metallb_pool(value: str) -> str:
+def normalize_load_balancer_ip_pool(value: str) -> str:
     raw = value.strip()
     if "-" not in raw:
         ipaddress.ip_network(raw, strict=False)
@@ -45,7 +45,7 @@ def normalize_metallb_pool(value: str) -> str:
     start_raw, end_raw = [part.strip() for part in raw.split("-", 1)]
     start_ip = ipaddress.ip_address(start_raw)
     if start_ip.version != 4:
-        raise ValueError("only IPv4 MetalLB ranges are supported")
+        raise ValueError("only IPv4 ranges are supported")
 
     if "." in end_raw:
         end_ip = ipaddress.ip_address(end_raw)
@@ -55,7 +55,7 @@ def normalize_metallb_pool(value: str) -> str:
         end_ip = ipaddress.ip_address(".".join(octets))
 
     if end_ip.version != 4 or int(end_ip) < int(start_ip):
-        raise ValueError(f"invalid MetalLB pool '{raw}'")
+        raise ValueError(f"invalid LoadBalancer IP pool '{raw}'")
 
     return f"{start_ip}-{end_ip}"
 
@@ -85,6 +85,16 @@ def normalize_data(data: dict) -> dict:
         data["ssh_username"] = "rocky" if data.get("os_family") == "rocky" else "ubuntu"
     if "enable_rocky_cockpit" not in data:
         data["enable_rocky_cockpit"] = False
+    if "kube_vip_version" not in data:
+        data["kube_vip_version"] = "v1.0.1"
+    if "cilium_load_balancer_pool_name" not in data:
+        data["cilium_load_balancer_pool_name"] = "default"
+    if "cilium_l2_policy_name" not in data:
+        data["cilium_l2_policy_name"] = "default"
+    if "kube_vip_ip" not in data and isinstance(data.get("haproxy_node"), dict):
+        haproxy_ip = data["haproxy_node"].get("ip")
+        if isinstance(haproxy_ip, str) and haproxy_ip:
+            data["kube_vip_ip"] = haproxy_ip
     if "proxmox_csi_chart_version" not in data:
         data["proxmox_csi_chart_version"] = "0.5.4"
     elif str(data.get("proxmox_csi_chart_version")) == "0.18.1":
@@ -104,13 +114,21 @@ def normalize_data(data: dict) -> dict:
         "loki_persistence_enabled",
         "loki_storage_class",
         "loki_storage_size_gb",
+        "metallb_chart_version",
     ):
         data.pop(key, None)
+    if "load_balancer_ip_pools" not in data and "metallb_address_pools" in data:
+        data["load_balancer_ip_pools"] = data["metallb_address_pools"]
+    data.pop("metallb_address_pools", None)
     data["cloud_image_file_name"] = normalize_cloud_image_file_name(data.get("cloud_image_file_name"))
 
     data["dns_domain"] = normalize_dns_domain(data.get("dns_domain"))
-    if "metallb_address_pools" in data and isinstance(data["metallb_address_pools"], list):
-        data["metallb_address_pools"] = [normalize_metallb_pool(pool) for pool in data["metallb_address_pools"]]
+    if "load_balancer_ip_pools" in data and isinstance(data["load_balancer_ip_pools"], list):
+        data["load_balancer_ip_pools"] = [normalize_load_balancer_ip_pool(pool) for pool in data["load_balancer_ip_pools"]]
+    if isinstance(data.get("cilium_load_balancer_pool_name"), str):
+        data["cilium_load_balancer_pool_name"] = data["cilium_load_balancer_pool_name"].strip().lower()
+    if isinstance(data.get("cilium_l2_policy_name"), str):
+        data["cilium_l2_policy_name"] = data["cilium_l2_policy_name"].strip().lower()
 
     nodes = data.get("nodes", {})
     for name, node in nodes.items():
@@ -118,10 +136,7 @@ def normalize_data(data: dict) -> dict:
         node.pop("mac_address", None)
         validate_hostname(name, "Node name", [])
 
-    haproxy_node = data.get("haproxy_node")
-    if isinstance(haproxy_node, dict):
-        haproxy_node["dns_name"] = normalize_dns_name(haproxy_node.get("dns_name"))
-        haproxy_node.pop("mac_address", None)
+    data.pop("haproxy_node", None)
 
     return data
 
@@ -151,6 +166,14 @@ def validate_data(data: dict) -> list[str]:
 
     if not isinstance(data.get("cloud_image_file_name"), str) or not data.get("cloud_image_file_name"):
         errors.append("cloud_image_file_name must be set.")
+
+    pool_name = data.get("cilium_load_balancer_pool_name")
+    if not isinstance(pool_name, str) or not HOSTNAME_RE.fullmatch(pool_name):
+        errors.append("cilium_load_balancer_pool_name must be a lowercase DNS-safe name such as 'default' or 'lan-pool'.")
+
+    policy_name = data.get("cilium_l2_policy_name")
+    if not isinstance(policy_name, str) or not HOSTNAME_RE.fullmatch(policy_name):
+        errors.append("cilium_l2_policy_name must be a lowercase DNS-safe name such as 'default' or 'lan-l2'.")
 
     gateway = data.get("gateway")
     prefix = data.get("prefix")
@@ -222,43 +245,22 @@ def validate_data(data: dict) -> list[str]:
         if dns_name is not None and not DNS_RE.fullmatch(dns_name):
             errors.append(f"Node '{name}' has invalid dns_name '{dns_name}'.")
 
-    haproxy_node = data.get("haproxy_node")
-    if control_plane_count > 1 and not isinstance(haproxy_node, dict):
-        errors.append("haproxy_node must be defined when deploying more than one control plane.")
-    if isinstance(haproxy_node, dict):
-        name = haproxy_node.get("name")
-        if isinstance(name, str):
-            validate_hostname(name, "HAProxy name", errors)
+    kube_vip_ip = data.get("kube_vip_ip")
+    if control_plane_count > 1:
+        if not isinstance(kube_vip_ip, str) or not kube_vip_ip:
+            errors.append("kube_vip_ip must be defined when deploying more than one control plane.")
         else:
-            errors.append("haproxy_node.name must be set.")
-
-        ip_value = haproxy_node.get("ip")
-        if isinstance(ip_value, str):
-            validate_ip(ip_value, "HAProxy IP", errors)
-            if ip_value in seen_ips:
-                errors.append(f"Duplicate HAProxy IP detected: {ip_value}")
+            validate_ip(kube_vip_ip, "kube-vip IP", errors)
+            if kube_vip_ip in seen_ips:
+                errors.append(f"Duplicate kube-vip IP detected: {kube_vip_ip}")
             if cluster_network is not None:
                 try:
-                    if ipaddress.ip_address(ip_value) not in cluster_network:
+                    if ipaddress.ip_address(kube_vip_ip) not in cluster_network:
                         errors.append(
-                            f"HAProxy IP '{ip_value}' is outside the configured gateway subnet '{cluster_network}'."
+                            f"kube_vip_ip '{kube_vip_ip}' is outside the configured gateway subnet '{cluster_network}'."
                         )
                 except ValueError:
                     pass
-        else:
-            errors.append("haproxy_node.ip must be set.")
-
-        vmid = haproxy_node.get("vm_id")
-        if not isinstance(vmid, int):
-            errors.append("haproxy_node.vm_id must be an integer.")
-        elif vmid in seen_vmids:
-            errors.append(f"Duplicate VM ID detected: {vmid}")
-        else:
-            seen_vmids.add(vmid)
-
-        dns_name = haproxy_node.get("dns_name")
-        if dns_name is not None and not DNS_RE.fullmatch(dns_name):
-            errors.append(f"HAProxy dns_name '{dns_name}' is invalid.")
 
     return errors
 

@@ -65,6 +65,48 @@
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
   tasks:
+    - name: Render Cilium values
+      ansible.builtin.template:
+        src: cilium-values.yaml.j2
+        dest: /root/cilium-values.yaml
+        mode: "0600"
+
+    - name: Render Cilium LoadBalancer IP pool manifest
+      ansible.builtin.template:
+        src: cilium-load-balancer-ip-pool.yaml.j2
+        dest: /root/cilium-load-balancer-ip-pool.yaml
+        mode: "0600"
+
+    - name: Render Cilium L2 announcement policy
+      ansible.builtin.template:
+        src: cilium-l2-announcement-policy.yaml.j2
+        dest: /root/cilium-l2-announcement-policy.yaml
+        mode: "0600"
+
+    - name: Render Traefik values
+      ansible.builtin.template:
+        src: traefik-values.yaml.j2
+        dest: /root/traefik-values.yaml
+        mode: "0600"
+
+    - name: Detect default network interface for kube-vip
+      ansible.builtin.shell: ip -o route show to default | awk '{print $5; exit}'
+      args:
+        executable: /bin/bash
+      register: kube_vip_interface
+      changed_when: false
+      when: control_plane_count | int > 1
+
+    - name: Render kube-vip static pod manifest on bootstrap control plane
+      ansible.builtin.template:
+        src: kube-vip.yaml.j2
+        dest: /etc/kubernetes/manifests/kube-vip.yaml
+        mode: "0644"
+      vars:
+        kube_vip_interface_name: "{{ kube_vip_interface.stdout | trim }}"
+        kube_vip_kubeconfig_host_path: "/etc/kubernetes/admin.conf"
+      when: control_plane_count | int > 1
+
     - name: Upgrade kubeadm
       ansible.builtin.command: "kubeadm upgrade apply -y v{{ kubernetes_version }}"
 
@@ -80,11 +122,13 @@
         --version {{ cilium_chart_version }}
         --values /root/cilium-values.yaml
 
-    - name: Upgrade MetalLB
-      ansible.builtin.command: >-
-        helm upgrade --install metallb metallb/metallb
-        --namespace metallb-system
-        --version {{ metallb_chart_version }}
+    - name: Apply Cilium LoadBalancer IP pool
+      ansible.builtin.command: kubectl apply -f /root/cilium-load-balancer-ip-pool.yaml
+      changed_when: false
+
+    - name: Apply Cilium L2 announcement policy
+      ansible.builtin.command: kubectl apply -f /root/cilium-l2-announcement-policy.yaml
+      changed_when: false
 
     - name: Upgrade Traefik
       ansible.builtin.command: >-
@@ -116,6 +160,28 @@
   gather_facts: false
   serial: 1
   tasks:
+    - name: Detect default network interface for kube-vip
+      ansible.builtin.shell: ip -o route show to default | awk '{print $5; exit}'
+      args:
+        executable: /bin/bash
+      register: kube_vip_interface
+      changed_when: false
+      when:
+        - inventory_hostname in groups['kube_control_plane']
+        - control_plane_count | int > 1
+
+    - name: Render kube-vip static pod manifest on additional control planes
+      ansible.builtin.template:
+        src: kube-vip.yaml.j2
+        dest: /etc/kubernetes/manifests/kube-vip.yaml
+        mode: "0644"
+      vars:
+        kube_vip_interface_name: "{{ kube_vip_interface.stdout | trim }}"
+        kube_vip_kubeconfig_host_path: "/etc/kubernetes/admin.conf"
+      when:
+        - inventory_hostname in groups['kube_control_plane']
+        - control_plane_count | int > 1
+
     - name: Upgrade node
       ansible.builtin.command: kubeadm upgrade node
 

@@ -1,0 +1,15 @@
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: {{ cilium_load_balancer_pool_name }}
+spec:
+  blocks:
+{% for pool in load_balancer_ip_pools %}
+{%   if "-" in pool %}
+{%     set range_parts = pool.split("-", 1) %}
+  - start: "{{ range_parts[0].strip() }}"
+    stop: "{{ range_parts[1].strip() }}"
+{%   else %}
+  - cidr: "{{ pool }}"
+{%   endif %}
+{% endfor %}

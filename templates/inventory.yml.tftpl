@@ -36,16 +36,6 @@ all:
           proxmox_node: ${nodes[name].host_node}
           vm_id: ${nodes[name].vm_id}
 %{ endfor ~}
-%{ if haproxy_name != null ~}
-    haproxy:
-      hosts:
-        ${haproxy_name}:
-          ansible_host: ${nodes[haproxy_name].ip}
-          node_ip: ${nodes[haproxy_name].ip}
-          node_dns_name: ${node_dns_names[haproxy_name] != null ? node_dns_names[haproxy_name] : ""}
-          proxmox_node: ${nodes[haproxy_name].host_node}
-          vm_id: ${nodes[haproxy_name].vm_id}
-%{ endif ~}
     kube_cluster:
       children:
         kube_control_plane: {}

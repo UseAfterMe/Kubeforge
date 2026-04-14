@@ -19,21 +19,16 @@ locals {
     for name, node in var.nodes : name => node if node.role == "worker"
   }
 
-  has_haproxy = var.haproxy_node != null
+  uses_kube_vip = length(local.control_plane_nodes) > 1
 
-  all_nodes = merge(
-    var.nodes,
-    local.has_haproxy ? { (var.haproxy_node.name) = var.haproxy_node } : {},
-  )
-
-  proxmox_hosts = toset(distinct([for _, node in local.all_nodes : node.host_node]))
+  proxmox_hosts = toset(distinct([for _, node in var.nodes : node.host_node]))
   normalized_dns_domain = (
     var.dns_domain != null && trim(var.dns_domain, " .") != ""
     ? join(".", compact(split(".", lower(trim(var.dns_domain, " .")))))
     : null
   )
   node_dns_names = {
-    for name, node in local.all_nodes :
+    for name, node in var.nodes :
     name => (
       try(node.dns_name, null) != null && trim(try(node.dns_name, ""), " .") != ""
       ? join(".", compact(split(".", lower(trim(try(node.dns_name, ""), " .")))))
@@ -48,8 +43,8 @@ locals {
   worker_ips               = [for name in sort(keys(local.worker_nodes)) : local.worker_nodes[name].ip]
   all_k8s_ips              = concat(local.control_plane_ips, local.worker_ips)
 
-  kubernetes_api_ip       = local.has_haproxy ? var.haproxy_node.ip : local.first_control_plane_ip
-  kubernetes_api_dns      = local.has_haproxy ? local.node_dns_names[var.haproxy_node.name] : local.first_control_plane_dns
+  kubernetes_api_ip       = local.uses_kube_vip ? var.kube_vip_ip : local.first_control_plane_ip
+  kubernetes_api_dns      = local.uses_kube_vip ? null : local.first_control_plane_dns
   kubernetes_api_endpoint = "https://${local.kubernetes_api_ip}:6443"
   kube_version_minor      = regex("^([0-9]+\\.[0-9]+)", var.kubernetes_version)[0]
   kube_package_version    = "${var.kubernetes_version}-1.1"
@@ -80,11 +75,12 @@ resource "proxmox_download_file" "cloud_image" {
   file_name    = var.cloud_image_file_name
   url          = var.cloud_image_url
   overwrite    = false
+  overwrite_unmanaged = true
   verify       = !var.proxmox_insecure
 }
 
 resource "proxmox_virtual_environment_file" "cloud_init_user_data" {
-  for_each = local.all_nodes
+  for_each = var.nodes
 
   content_type = "snippets"
   datastore_id = var.snippets_datastore
@@ -107,7 +103,7 @@ resource "proxmox_virtual_environment_file" "cloud_init_user_data" {
 }
 
 resource "proxmox_virtual_environment_vm" "node" {
-  for_each = local.all_nodes
+  for_each = var.nodes
 
   node_name       = each.value.host_node
   vm_id           = each.value.vm_id
@@ -178,11 +174,10 @@ resource "local_file" "ansible_inventory" {
   content = templatefile("${path.module}/templates/inventory.yml.tftpl", {
     ssh_username         = var.ssh_username
     ssh_private_key_path = local_sensitive_file.cluster_ssh_private_key.filename
-    nodes                = local.all_nodes
+    nodes                = var.nodes
     node_dns_names       = local.node_dns_names
     control_plane_names  = sort(keys(local.control_plane_nodes))
     worker_names         = sort(keys(local.worker_nodes))
-    haproxy_name         = local.has_haproxy ? var.haproxy_node.name : null
     first_control_plane  = local.first_control_plane_name
   })
 }
@@ -205,8 +200,9 @@ resource "local_sensitive_file" "ansible_vars" {
     pod_cidr                  = var.pod_cidr
     service_cidr              = var.service_cidr
     control_plane_count       = length(local.control_plane_nodes)
+    kube_vip_ip               = var.kube_vip_ip
+    kube_vip_version          = var.kube_vip_version
     cilium_chart_version      = var.cilium_chart_version
-    metallb_chart_version     = var.metallb_chart_version
     traefik_chart_version     = var.traefik_chart_version
     install_qemu_guest_agent  = var.install_qemu_guest_agent
     enable_rocky_cockpit      = var.enable_rocky_cockpit
@@ -219,6 +215,8 @@ resource "local_sensitive_file" "ansible_vars" {
     proxmox_insecure          = var.proxmox_insecure
     dns_domain                = local.normalized_dns_domain
     dns_servers               = var.dns_servers
-    metallb_address_pools     = var.metallb_address_pools
+    load_balancer_ip_pools    = var.load_balancer_ip_pools
+    cilium_load_balancer_pool_name = var.cilium_load_balancer_pool_name
+    cilium_l2_policy_name          = var.cilium_l2_policy_name
   })
 }

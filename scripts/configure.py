@@ -28,7 +28,10 @@ DEFAULT_BOOTSTRAP_USERS = {
     "rocky": "rocky",
 }
 
+HOSTNAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
 ANSI_RESET = "\033[0m"
+ANSI_BOLD = "\033[1m"
 ANSI_CYAN = "\033[36m"
 ANSI_GREEN = "\033[32m"
 ANSI_YELLOW = "\033[33m"
@@ -37,7 +40,6 @@ ANSI_DIM = "\033[2m"
 
 DEFAULT_CHART_VERSIONS = {
     "cilium": "1.19.2",
-    "metallb": "0.15.3",
     "traefik": "39.0.7",
     "proxmox-csi-plugin": "0.5.4",
 }
@@ -86,9 +88,21 @@ OS_IMAGE_PRESETS = {
 }
 
 
+def style_prompt_label(text: str) -> str:
+    return colorize(text, f"{ANSI_CYAN}{ANSI_BOLD}")
+
+
+def style_choice_label(choices: list[str], color_code: str = ANSI_MAGENTA) -> str:
+    return colorize("/".join(choices), color_code)
+
+
 def prompt(text: str, default: str | None = None, secret: bool = False) -> str:
-    suffix = f" [{style_default_value(default)}]" if default not in (None, "") else ""
-    rendered = f"{text}{suffix}: "
+    if supports_color():
+        suffix = f" [{style_default_value(default)}]" if default not in (None, "") else ""
+        rendered = f"{style_prompt_label(text)}{suffix}: "
+    else:
+        suffix = f" [{default}]" if default not in (None, "") else ""
+        rendered = f"{text}{suffix}: "
     while True:
         value = getpass.getpass(rendered) if secret else input(rendered)
         value = value.strip()
@@ -99,20 +113,20 @@ def prompt(text: str, default: str | None = None, secret: bool = False) -> str:
 
 
 def prompt_optional_secret(text: str) -> str | None:
-    rendered = f"{text}: "
+    rendered = f"{style_prompt_label(text) if supports_color() else text}: "
     value = getpass.getpass(rendered).strip()
     return value or None
 
 
-def prompt_choice(text: str, choices: list[str], default: str | None = None, choices_color: str = ANSI_CYAN) -> str:
+def prompt_choice(text: str, choices: list[str], default: str | None = None, choices_color: str = ANSI_MAGENTA) -> str:
     choice_set = set(choices)
-    choices_label = colorize("/".join(choices), choices_color)
+    choices_label = style_choice_label(choices, choices_color) if supports_color() else "/".join(choices)
     prompt_text = f"{text} ({choices_label})"
     while True:
         value = prompt(prompt_text, default)
         if value in choice_set:
             return value
-        print(f"Choose one of: {', '.join(choices)}")
+        print(colorize(f"Choose one of: {', '.join(choices)}", ANSI_YELLOW))
 
 
 def prompt_storage(text: str, available_storages: list[str], default: str) -> str:
@@ -130,7 +144,7 @@ def select_default(preferred: list[str], fallback: list[str], hard_default: str)
     return hard_default
 
 
-def style_inline_values(values: list[str], color_code: str = ANSI_YELLOW) -> str:
+def style_inline_values(values: list[str], color_code: str = ANSI_CYAN) -> str:
     if not values:
         return "none"
     if not supports_color():
@@ -148,7 +162,7 @@ def prompt_optional_int(text: str, default: int | None = None) -> int | None:
         try:
             return int(raw)
         except ValueError:
-            print("Enter a whole number or leave it blank.")
+            print(colorize("Enter a whole number or leave it blank.", ANSI_YELLOW))
 
 
 def prompt_optional_int_with_choices(text: str, default: int | None = None) -> int | None:
@@ -163,7 +177,7 @@ def prompt_optional_int_with_choices(text: str, default: int | None = None) -> i
         try:
             return int(raw)
         except ValueError:
-            print("Enter a whole number, leave it blank, or type none.")
+            print(colorize("Enter a whole number, leave it blank, or type none.", ANSI_YELLOW))
 
 
 def prompt_csv_ips(text: str, default: str) -> list[str]:
@@ -171,17 +185,27 @@ def prompt_csv_ips(text: str, default: str) -> list[str]:
         try:
             return [parse_ip(item.strip()) for item in prompt(text, default).split(",") if item.strip()]
         except ValueError as exc:
-            print(f"Invalid IP list: {exc}")
+            print(colorize(f"Invalid IP list: {exc}", ANSI_YELLOW))
 
 
-def prompt_metallb_pools(text: str, default: str) -> list[str]:
-    while True:
-        raw = prompt(text, default)
-        pools = [item.strip() for item in raw.split(",") if item.strip()]
+def prompt_load_balancer_ip_pools(default: str) -> list[str]:
+    default_pools = [item.strip() for item in default.split(",") if item.strip()]
+    default_start_ip = "192.168.1.240"
+    default_count = 11
+
+    if len(default_pools) == 1:
         try:
-            return [normalize_metallb_pool(pool) for pool in pools]
-        except ValueError as exc:
-            print(f"Invalid MetalLB pool: {exc}")
+            expanded = expand_ipv4_range(default_pools[0])
+            if expanded:
+                default_start_ip = expanded[0]
+                default_count = len(expanded)
+        except ValueError:
+            pass
+
+    start_ip = parse_ip(prompt("Cilium LoadBalancer starting IP", default_start_ip))
+    count = prompt_int("Cilium LoadBalancer IP count", default_count, minimum=1)
+    allocated_ips = next_ips(start_ip, count)
+    return [compact_ipv4_range(allocated_ips[0], allocated_ips[-1])]
 
 
 def expand_ipv4_range(raw: str) -> list[str]:
@@ -207,7 +231,7 @@ def expand_ipv4_range(raw: str) -> list[str]:
     return [str(start_ip + offset) for offset in range(int(end_ip) - int(start_ip) + 1)]
 
 
-def normalize_metallb_pool(raw: str) -> str:
+def normalize_load_balancer_ip_pool(raw: str) -> str:
     value = raw.strip()
     if "-" not in value:
         ipaddress.ip_network(value, strict=False)
@@ -216,7 +240,7 @@ def normalize_metallb_pool(raw: str) -> str:
     start_raw, end_raw = [part.strip() for part in value.split("-", 1)]
     start_ip = ipaddress.ip_address(start_raw)
     if start_ip.version != 4:
-        raise ValueError("only IPv4 MetalLB ranges are supported here")
+        raise ValueError("only IPv4 ranges are supported here")
 
     if "." in end_raw:
         end_ip = ipaddress.ip_address(end_raw)
@@ -231,15 +255,32 @@ def normalize_metallb_pool(raw: str) -> str:
     return f"{start_ip}-{end_ip}"
 
 
+def compact_ipv4_range(start_ip: str, end_ip: str) -> str:
+    start = ipaddress.ip_address(start_ip)
+    end = ipaddress.ip_address(end_ip)
+    if start.version != 4 or end.version != 4:
+        raise ValueError("only IPv4 ranges are supported here")
+    if int(end) < int(start):
+        raise ValueError("range end must be greater than or equal to the start")
+    if start == end:
+        return str(start)
+
+    start_parts = str(start).split(".")
+    end_parts = str(end).split(".")
+    if start_parts[:-1] == end_parts[:-1]:
+        return f"{start}-{end_parts[-1]}"
+    return f"{start}-{end}"
+
+
 def prompt_ip_range(text: str, default: str, required_count: int) -> list[str]:
     while True:
         try:
             ips = expand_ipv4_range(prompt(text, default))
         except ValueError as exc:
-            print(f"Invalid IP range: {exc}")
+            print(colorize(f"Invalid IP range: {exc}", ANSI_YELLOW))
             continue
         if len(ips) < required_count:
-            print(f"Range must include at least {required_count} IP(s).")
+            print(colorize(f"Range must include at least {required_count} IP(s).", ANSI_YELLOW))
             continue
         return ips
 
@@ -341,14 +382,17 @@ def prompt_int(text: str, default: int, minimum: int = 0) -> int:
 def prompt_bool(text: str, default: bool) -> bool:
     default_label = "Y/n" if default else "y/N"
     while True:
-        raw = input(f"{text} [{default_label}]: ").strip().lower()
+        if supports_color():
+            raw = input(f"{style_prompt_label(text)} [{style_default_value(default_label)}]: ").strip().lower()
+        else:
+            raw = input(f"{text} [{default_label}]: ").strip().lower()
         if not raw:
             return default
         if raw in {"y", "yes"}:
             return True
         if raw in {"n", "no"}:
             return False
-        print("Enter yes or no.")
+        print(colorize("Enter yes or no.", ANSI_YELLOW))
 
 
 def prompt_hostname_label(text: str, default: str) -> str:
@@ -356,7 +400,7 @@ def prompt_hostname_label(text: str, default: str) -> str:
         value = prompt(text, default).strip().lower()
         if HOSTNAME_RE.fullmatch(value):
             return value
-        print("Use a lowercase username like ubuntu, rocky, admin, or operator.")
+        print(colorize("Use a lowercase username like ubuntu, rocky, admin, or operator.", ANSI_YELLOW))
 
 
 def supports_color() -> bool:
@@ -455,16 +499,16 @@ def subnet_mismatch_messages(state: dict[str, object]) -> list[str]:
         check_ip(f"Control plane {index} IP", ip_value)
     for index, ip_value in enumerate(state.get("wk_ips", []) or [], start=1):
         check_ip(f"Worker {index} IP", ip_value)
-    check_ip("HAProxy IP", state.get("haproxy_ip"))
+    check_ip("kube-vip IP", state.get("kube_vip_ip"))
 
-    for pool in state.get("metallb_address_pools", []) or []:
+    for pool in state.get("load_balancer_ip_pools", []) or []:
         if not isinstance(pool, str) or not pool:
             continue
         raw = pool.strip()
         if "-" not in raw:
             try:
                 if ipaddress.ip_network(raw, strict=False).network_address not in network:
-                    messages.append(f"MetalLB pool {raw} does not align with the configured gateway subnet {network}.")
+                    messages.append(f"LoadBalancer IP pool {raw} does not align with the configured gateway subnet {network}.")
             except ValueError:
                 continue
             continue
@@ -476,7 +520,7 @@ def subnet_mismatch_messages(state: dict[str, object]) -> list[str]:
         except ValueError:
             continue
         if start_ip not in network or end_ip not in network:
-            messages.append(f"MetalLB pool {raw} is outside the configured gateway subnet {network}.")
+            messages.append(f"LoadBalancer IP pool {raw} is outside the configured gateway subnet {network}.")
 
     return messages
 
@@ -659,10 +703,6 @@ def worker_node_name(prefix: str, index: int, total: int) -> str:
     return f"{prefix}-wk{index}"
 
 
-def haproxy_node_name(prefix: str) -> str:
-    return f"{prefix}-ha"
-
-
 @dataclass
 class ProxmoxClient:
     api_url: str
@@ -761,12 +801,12 @@ def choose_kubernetes_version() -> str:
         print("Pick a listed number or c for custom.")
 
 
-def summarize_nodes(nodes: dict[str, dict], haproxy_node: dict | None) -> None:
+def summarize_nodes(nodes: dict[str, dict], kube_vip_ip: str | None) -> None:
     print("\nPlanned nodes:")
     for name, node in nodes.items():
         print(f"  {name:<8} {node['role']:<12} {node['ip']:<15} vmid={node['vm_id']} host={node['host_node']}")
-    if haproxy_node:
-        print(f"  {haproxy_node['name']:<8} {'haproxy':<12} {haproxy_node['ip']:<15} vmid={haproxy_node['vm_id']} host={haproxy_node['host_node']}")
+    if kube_vip_ip:
+        print(f"  {'vip':<8} {'endpoint':<12} {kube_vip_ip:<15}")
 
 
 def ensure_available_vmids(used_vmids: set[int], vmids: list[int]) -> None:
@@ -995,69 +1035,92 @@ def prompt_topology_section(state: dict[str, object], used_vmids: set[int]) -> N
 
     use_shared_ip_range_default = bool(state.get("use_shared_ip_range", True))
     state["use_shared_ip_range"] = prompt_bool(
-        "Use one IP range for HAProxy, control planes, and workers",
+        "Use one IP range for control planes and workers",
         use_shared_ip_range_default,
     )
 
     current_cp_ips = list(state.get("cp_ips", []))
     current_wk_ips = list(state.get("wk_ips", []))
-    current_haproxy_ip = state.get("haproxy_ip")
-    haproxy_needed = control_plane_count > 1
+    current_kube_vip_ip = state.get("kube_vip_ip")
+    kube_vip_needed = control_plane_count > 1
 
     if state["use_shared_ip_range"]:
-        required_count = control_plane_count + worker_count + (1 if haproxy_needed else 0)
-        if current_cp_ips or current_wk_ips or current_haproxy_ip:
-            existing_ips = []
-            if haproxy_needed and current_haproxy_ip:
-                existing_ips.append(str(current_haproxy_ip))
-            existing_ips.extend(current_cp_ips)
-            existing_ips.extend(current_wk_ips)
-            shared_default = f"{existing_ips[0]}-{existing_ips[-1].split('.')[-1]}" if existing_ips else "192.168.1.60-100"
+        if kube_vip_needed:
+            kube_vip_default = str(current_kube_vip_ip or "192.168.1.60")
+            state["kube_vip_ip"] = parse_ip(prompt("kube-vip IP for Kubernetes API", kube_vip_default))
         else:
-            shared_default = "192.168.1.60-100"
+            state["kube_vip_ip"] = None
 
-        allocated_ips = prompt_ip_range(
-            "Cluster node IP range for HAProxy, control planes, and workers",
-            shared_default,
-            required_count,
-        )
-        cursor = 0
-        if haproxy_needed:
-            state["haproxy_ip"] = allocated_ips[cursor]
-            cursor += 1
+        required_count = control_plane_count + worker_count
+        if current_cp_ips or current_wk_ips:
+            existing_ips: list[str] = []
+            existing_ips.extend(str(value) for value in current_cp_ips)
+            existing_ips.extend(str(value) for value in current_wk_ips)
+            if len(existing_ips) == required_count and is_contiguous_ips(existing_ips):
+                shared_default = existing_ips[0]
+            else:
+                shared_default = str(ipaddress.ip_address(str(state["kube_vip_ip"])) + 1) if state.get("kube_vip_ip") else "192.168.1.60"
         else:
-            state["haproxy_ip"] = None
+            shared_default = str(ipaddress.ip_address(str(state["kube_vip_ip"])) + 1) if state.get("kube_vip_ip") else "192.168.1.60"
+
+        start_ip = parse_ip(prompt("Cluster node starting IP for control planes and workers", shared_default))
+        allocated_ips = next_ips(start_ip, required_count)
+        cursor = 0
         state["cp_ips"] = allocated_ips[cursor : cursor + control_plane_count]
         cursor += control_plane_count
         state["wk_ips"] = allocated_ips[cursor : cursor + worker_count]
     else:
-        if haproxy_needed:
-            haproxy_mode = prompt_choice("HAProxy IP assignment mode", ["range", "manual"], "manual")
-            if haproxy_mode == "range":
-                state["haproxy_ip"] = prompt_ip_range(
-                    "HAProxy IP range",
-                    str(current_haproxy_ip or "192.168.1.70-100"),
-                    1,
-                )[0]
-            else:
-                state["haproxy_ip"] = parse_ip(prompt("HAProxy API endpoint IP", str(current_haproxy_ip or "192.168.1.70")))
+        if kube_vip_needed:
+            state["kube_vip_ip"] = parse_ip(prompt("kube-vip IP for Kubernetes API", str(current_kube_vip_ip or "192.168.1.70")))
         else:
-            state["haproxy_ip"] = None
+            state["kube_vip_ip"] = None
 
-        state["cp_ips"] = prompt_ip_assignment_with_existing("Control plane", control_plane_count, current_cp_ips, "192.168.1.80")
-        state["wk_ips"] = prompt_ip_assignment_with_existing("Worker", worker_count, current_wk_ips, "192.168.1.90")
+        if current_cp_ips and len(current_cp_ips) == control_plane_count:
+            control_plane_default_start_ip = current_cp_ips[0]
+        elif kube_vip_needed and state.get("kube_vip_ip"):
+            control_plane_default_start_ip = str(ipaddress.ip_address(str(state["kube_vip_ip"])) + 1)
+        else:
+            control_plane_default_start_ip = "192.168.1.80"
 
-    state["metallb_address_pools"] = prompt_metallb_pools(
-        "MetalLB address pool(s), comma separated ranges; spaces are optional",
-        ",".join(state.get("metallb_address_pools", ["192.168.1.240-250"])),
+        state["cp_ips"] = prompt_ip_assignment_with_existing(
+            "Control plane",
+            control_plane_count,
+            current_cp_ips,
+            control_plane_default_start_ip,
+        )
+
+        if current_wk_ips and len(current_wk_ips) == worker_count:
+            worker_default_start_ip = current_wk_ips[0]
+        elif state["cp_ips"]:
+            worker_default_start_ip = str(ipaddress.ip_address(state["cp_ips"][-1]) + 1)
+        elif kube_vip_needed and state.get("kube_vip_ip"):
+            worker_default_start_ip = str(ipaddress.ip_address(str(state["kube_vip_ip"])) + control_plane_count + 1)
+        else:
+            worker_default_start_ip = "192.168.1.90"
+
+        state["wk_ips"] = prompt_ip_assignment_with_existing(
+            "Worker",
+            worker_count,
+            current_wk_ips,
+            worker_default_start_ip,
+        )
+
+    state["load_balancer_ip_pools"] = prompt_load_balancer_ip_pools(
+        ",".join(state.get("load_balancer_ip_pools", state.get("metallb_address_pools", ["192.168.1.240-250"]))),
+    )
+    state["cilium_load_balancer_pool_name"] = prompt_hostname_label(
+        "Cilium LoadBalancer pool name",
+        str(state.get("cilium_load_balancer_pool_name", "default")),
+    )
+    l2_default_name = str(state.get("cilium_l2_policy_name") or f"{state['cilium_load_balancer_pool_name']}-l2")
+    state["cilium_l2_policy_name"] = prompt_hostname_label(
+        "Cilium L2 announcement policy name",
+        l2_default_name,
     )
 
-    same_vlan_default = (
-        state.get("cp_vlan_id") == state.get("wk_vlan_id")
-        and (not haproxy_needed or state.get("haproxy_vlan_id") == state.get("cp_vlan_id"))
-    )
+    same_vlan_default = state.get("cp_vlan_id") == state.get("wk_vlan_id")
     state["use_shared_vlan_id"] = prompt_bool(
-        "Use one VLAN ID for HAProxy, control planes, and workers",
+        "Use one VLAN ID for control planes and workers",
         bool(state.get("use_shared_vlan_id", same_vlan_default)),
     )
     if state["use_shared_vlan_id"]:
@@ -1067,16 +1130,7 @@ def prompt_topology_section(state: dict[str, object], used_vmids: set[int]) -> N
         )
         state["cp_vlan_id"] = shared_vlan
         state["wk_vlan_id"] = shared_vlan
-        state["haproxy_vlan_id"] = shared_vlan if haproxy_needed else None
     else:
-        if haproxy_needed:
-            state["haproxy_vlan_id"] = prompt_optional_int_with_choices(
-                "HAProxy VLAN ID (blank or none for untagged)",
-                state.get("haproxy_vlan_id"),
-            )
-        else:
-            state["haproxy_vlan_id"] = None
-
         state["cp_vlan_id"] = prompt_optional_int_with_choices(
             "Control plane VLAN ID (blank or none for untagged)",
             state.get("cp_vlan_id"),
@@ -1094,18 +1148,6 @@ def prompt_topology_section(state: dict[str, object], used_vmids: set[int]) -> N
     current_wk_vmids = list(state.get("wk_vmids", []))
     wk_default_vmid = next_vmid_seed(reserved_vmids)
     state["wk_vmids"] = prompt_vmid_assignment_with_existing("Worker", worker_count, reserved_vmids, current_wk_vmids, wk_default_vmid)
-    reserved_vmids |= set(state["wk_vmids"])
-
-    if control_plane_count > 1:
-        haproxy_default_vmid = next_vmid_seed(reserved_vmids)
-        state["haproxy_vmid"] = prompt_single_vmid_with_existing(
-            "HAProxy",
-            reserved_vmids,
-            state.get("haproxy_vmid"),
-            haproxy_default_vmid,
-        )
-    else:
-        state["haproxy_vmid"] = None
 
 
 def prompt_resources_section(state: dict[str, object]) -> None:
@@ -1121,7 +1163,6 @@ def prompt_charts_section(state: dict[str, object]) -> None:
     state["install_proxmox_csi"] = prompt_bool("Install Proxmox CSI", bool(state.get("install_proxmox_csi", True)))
     state["proxmox_csi_storage"] = prompt("Proxmox CSI storage target", str(state.get("proxmox_csi_storage", state["vm_datastore"])))
     state["cilium_chart_version"] = prompt_chart_version("Cilium", str(state.get("cilium_chart_version", DEFAULT_CHART_VERSIONS["cilium"])), "https://helm.cilium.io/index.yaml", "cilium")
-    state["metallb_chart_version"] = prompt_chart_version("MetalLB", str(state.get("metallb_chart_version", DEFAULT_CHART_VERSIONS["metallb"])), "https://metallb.github.io/metallb/index.yaml", "metallb")
     state["traefik_chart_version"] = prompt_chart_version("Traefik", str(state.get("traefik_chart_version", DEFAULT_CHART_VERSIONS["traefik"])), "https://traefik.github.io/charts/index.yaml", "traefik")
     state["proxmox_csi_chart_version"] = prompt_chart_version(
         "Proxmox CSI",
@@ -1223,14 +1264,7 @@ def main() -> int:
                     for index in range(1, int(state["worker_count"]) + 1)
                 },
             },
-            {
-                "name": haproxy_node_name(str(state["cluster_name"])),
-                "ip": state["haproxy_ip"],
-                "vm_id": state["haproxy_vmid"],
-                "host_node": state["host_node"],
-            }
-            if int(state["control_plane_count"]) > 1
-            else None,
+            str(state.get("kube_vip_ip")) if int(state["control_plane_count"]) > 1 and state.get("kube_vip_ip") else None,
         )
         print("\nReview options:")
         print("  1. naming/platform")
@@ -1306,11 +1340,11 @@ def main() -> int:
     worker_count = int(state["worker_count"])
     cp_ips = list(state["cp_ips"])
     wk_ips = list(state["wk_ips"])
-    haproxy_ip = state.get("haproxy_ip")
-    metallb_address_pools = list(state["metallb_address_pools"])
+    load_balancer_ip_pools = list(state["load_balancer_ip_pools"])
+    cilium_load_balancer_pool_name = str(state.get("cilium_load_balancer_pool_name", "default"))
+    cilium_l2_policy_name = str(state.get("cilium_l2_policy_name", "default"))
     cp_vmids = list(state["cp_vmids"])
     wk_vmids = list(state["wk_vmids"])
-    haproxy_vmid = state.get("haproxy_vmid")
     cp_cores = int(state["cp_cores"])
     cp_memory_mb = int(state["cp_memory_mb"])
     cp_disk_gb = int(state["cp_disk_gb"])
@@ -1319,27 +1353,13 @@ def main() -> int:
     wk_disk_gb = int(state["wk_disk_gb"])
     install_proxmox_csi = bool(state["install_proxmox_csi"])
     proxmox_csi_storage = str(state["proxmox_csi_storage"])
+    kube_vip_ip = state.get("kube_vip_ip")
+    kube_vip_version = str(state.get("kube_vip_version", "v1.0.1"))
     cilium_chart_version = str(state["cilium_chart_version"])
-    metallb_chart_version = str(state["metallb_chart_version"])
     traefik_chart_version = str(state["traefik_chart_version"])
     proxmox_csi_chart_version = str(state["proxmox_csi_chart_version"])
 
-    haproxy_node = None
     all_planned_vmids = cp_vmids + wk_vmids
-    if control_plane_count > 1:
-        all_planned_vmids.append(haproxy_vmid)
-        haproxy_node = {
-            "name": haproxy_node_name(cluster_name),
-            "host_node": host_node,
-            "role": "loadbalancer",
-            "vm_id": haproxy_vmid,
-            "ip": haproxy_ip,
-            "dns_name": f"{haproxy_node_name(cluster_name)}.{dns_domain}" if dns_domain else None,
-            "vlan_id": state.get("haproxy_vlan_id"),
-            "cores": 2,
-            "memory_mb": 2048,
-            "disk_gb": 20,
-        }
 
     try:
         ensure_unique_vmids(all_planned_vmids)
@@ -1405,15 +1425,17 @@ def main() -> int:
         "ssh_password_hash": console_password_hash,
         "pod_cidr": "10.244.0.0/16",
         "service_cidr": "10.96.0.0/12",
-        "metallb_address_pools": metallb_address_pools,
+        "load_balancer_ip_pools": load_balancer_ip_pools,
+        "cilium_load_balancer_pool_name": cilium_load_balancer_pool_name,
+        "cilium_l2_policy_name": cilium_l2_policy_name,
+        "kube_vip_ip": kube_vip_ip,
+        "kube_vip_version": kube_vip_version,
         "cilium_chart_version": cilium_chart_version,
-        "metallb_chart_version": metallb_chart_version,
         "traefik_chart_version": traefik_chart_version,
         "install_proxmox_csi": install_proxmox_csi,
         "proxmox_csi_chart_version": proxmox_csi_chart_version,
         "proxmox_csi_storage": proxmox_csi_storage,
         "nodes": nodes,
-        "haproxy_node": haproxy_node,
     }
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
@@ -1421,7 +1443,7 @@ def main() -> int:
         json.dump(payload, handle, indent=2)
         handle.write("\n")
 
-    summarize_nodes(nodes, haproxy_node)
+    summarize_nodes(nodes, str(kube_vip_ip) if isinstance(kube_vip_ip, str) and kube_vip_ip else None)
     print(f"\nWrote {args.output}")
     if not freelens_is_installed():
         print_optional_freelens_hint()

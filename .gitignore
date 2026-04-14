@@ -2,9 +2,11 @@
 .terraform/
 out/
 terraform.tfvars.json
+terraform.tfstate.d/
 *.retry
 *.tfstate
 *.tfstate.backup
 .DS_Store
 __pycache__/
 *.pyc
+*.bak.*
