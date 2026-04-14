@@ -978,6 +978,99 @@ destroy_targets_preserving_cloud_image() {
   printf '%s\n' "${targets[@]}"
 }
 
+run_destroy_preserving_cloud_image() {
+  local destroy_workspace="$1"
+  local destroy_tfvars="$2"
+  local destroy_state_arg="$3"
+  shift 3
+
+  local state_path temp_state
+  local image_addresses=()
+  local address
+
+  state_path="$(workspace_state_path "${destroy_workspace}")"
+  if [[ -n "${destroy_state_arg}" ]]; then
+    state_path="${destroy_state_arg#-state=}"
+  fi
+
+  if [[ ! -f "${state_path}" ]]; then
+    log_warn "No workspace state file was found for ${destroy_workspace}; running a normal destroy."
+    if [[ -n "${destroy_state_arg}" ]]; then
+      tofu destroy -refresh=false "${destroy_state_arg}" -var-file="${destroy_tfvars}" -auto-approve "$@"
+    else
+      tofu destroy -refresh=false -var-file="${destroy_tfvars}" -auto-approve "$@"
+    fi
+    return 0
+  fi
+
+  while IFS= read -r address; do
+    [[ -z "${address}" ]] && continue
+    image_addresses+=("${address}")
+  done < <(list_state_addresses_matching "${state_path}" "proxmox_download_file.cloud_image")
+
+  if (( ${#image_addresses[@]} == 0 )); then
+    log_warn "No cached cloud image resource was found in state; running a normal destroy."
+    if [[ -n "${destroy_state_arg}" ]]; then
+      tofu destroy -refresh=false "${destroy_state_arg}" -var-file="${destroy_tfvars}" -auto-approve "$@"
+    else
+      tofu destroy -refresh=false -var-file="${destroy_tfvars}" -auto-approve "$@"
+    fi
+    return 0
+  fi
+
+  temp_state="$(mktemp "${TMPDIR:-/tmp}/kubeforge-destroy-state.XXXXXX")"
+  cp "${state_path}" "${temp_state}"
+  tofu state rm -state="${temp_state}" "${image_addresses[@]}" >/dev/null
+
+  if tofu destroy -refresh=false -state="${temp_state}" -var-file="${destroy_tfvars}" -auto-approve "$@"; then
+    prune_state_except_cloud_image "${state_path}"
+    rm -f "${temp_state}"
+    return 0
+  fi
+
+  rm -f "${temp_state}"
+  return 1
+}
+
+list_state_addresses_matching() {
+  local state_path="$1"
+  local prefix="$2"
+  local address
+
+  if [[ ! -f "${state_path}" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r address; do
+    [[ -z "${address}" ]] && continue
+    if [[ "${address}" == ${prefix}* ]]; then
+      printf '%s\n' "${address}"
+    fi
+  done < <(tofu state list -state="${state_path}" 2>/dev/null || true)
+}
+
+prune_state_except_cloud_image() {
+  local state_path="$1"
+  local address
+  local remove_args=()
+
+  if [[ ! -f "${state_path}" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r address; do
+    [[ -z "${address}" ]] && continue
+    if [[ "${address}" == proxmox_download_file.cloud_image* ]]; then
+      continue
+    fi
+    remove_args+=("${address}")
+  done < <(tofu state list -state="${state_path}" 2>/dev/null || true)
+
+  if (( ${#remove_args[@]} > 0 )); then
+    tofu state rm -state="${state_path}" "${remove_args[@]}" >/dev/null
+  fi
+}
+
 choose_destroy_workspace() {
   local workspaces=()
   while IFS= read -r workspace; do
@@ -2669,20 +2762,7 @@ case "${ACTION}" in
       log_info "Keeping cached cloud image in Terraform state for reuse on the next apply."
     fi
     if [[ "${keep_cached_cloud_image}" == "true" ]]; then
-      destroy_targets=()
-      while IFS= read -r destroy_target; do
-        [[ -z "${destroy_target}" ]] && continue
-        destroy_targets+=("${destroy_target}")
-      done < <(destroy_targets_preserving_cloud_image "${destroy_workspace}" "${destroy_state_arg}")
-      if (( ${#destroy_targets[@]} > 0 )); then
-        if [[ -n "${destroy_state_arg}" ]]; then
-          tofu destroy -refresh=false "${destroy_state_arg}" -var-file="${local_destroy_tfvars}" -auto-approve "${destroy_targets[@]}" "$@"
-        else
-          tofu destroy -refresh=false -var-file="${local_destroy_tfvars}" -auto-approve "${destroy_targets[@]}" "$@"
-        fi
-      else
-        log_warn "No destroy targets were found besides the cached cloud image."
-      fi
+      run_destroy_preserving_cloud_image "${destroy_workspace}" "${local_destroy_tfvars}" "${destroy_state_arg}" "$@"
     else
       if [[ -n "${destroy_state_arg}" ]]; then
         tofu destroy -refresh=false "${destroy_state_arg}" -var-file="${local_destroy_tfvars}" -auto-approve "$@"
