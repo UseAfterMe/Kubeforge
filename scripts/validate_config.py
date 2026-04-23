@@ -91,10 +91,6 @@ def normalize_data(data: dict) -> dict:
         data["cilium_load_balancer_pool_name"] = "default"
     if "cilium_l2_policy_name" not in data:
         data["cilium_l2_policy_name"] = "default"
-    if "kube_vip_ip" not in data and isinstance(data.get("haproxy_node"), dict):
-        haproxy_ip = data["haproxy_node"].get("ip")
-        if isinstance(haproxy_ip, str) and haproxy_ip:
-            data["kube_vip_ip"] = haproxy_ip
     if "proxmox_csi_chart_version" not in data:
         data["proxmox_csi_chart_version"] = "0.5.4"
     elif str(data.get("proxmox_csi_chart_version")) == "0.18.1":
@@ -114,12 +110,8 @@ def normalize_data(data: dict) -> dict:
         "loki_persistence_enabled",
         "loki_storage_class",
         "loki_storage_size_gb",
-        "metallb_chart_version",
     ):
         data.pop(key, None)
-    if "load_balancer_ip_pools" not in data and "metallb_address_pools" in data:
-        data["load_balancer_ip_pools"] = data["metallb_address_pools"]
-    data.pop("metallb_address_pools", None)
     data["cloud_image_file_name"] = normalize_cloud_image_file_name(data.get("cloud_image_file_name"))
 
     data["dns_domain"] = normalize_dns_domain(data.get("dns_domain"))
@@ -135,8 +127,6 @@ def normalize_data(data: dict) -> dict:
         node["dns_name"] = normalize_dns_name(node.get("dns_name"))
         node.pop("mac_address", None)
         validate_hostname(name, "Node name", [])
-
-    data.pop("haproxy_node", None)
 
     return data
 

@@ -262,7 +262,7 @@ def history_ipv4_usage(state: dict[str, object]) -> tuple[list[str], list[str]]:
 
         record_ip(cluster_ips, snapshot.get("kube_vip_ip"))
 
-        pools = snapshot.get("load_balancer_ip_pools", snapshot.get("metallb_address_pools", []))
+        pools = snapshot.get("load_balancer_ip_pools", [])
         if isinstance(pools, list):
             for pool in pools:
                 if not isinstance(pool, str) or not pool.strip():
@@ -1220,7 +1220,7 @@ def prompt_topology_section(state: dict[str, object], used_vmids: set[int]) -> N
             worker_default_start_ip,
         )
 
-    current_lb_pools = list(state.get("load_balancer_ip_pools", state.get("metallb_address_pools", [])))
+    current_lb_pools = list(state.get("load_balancer_ip_pools", []))
     if current_lb_pools:
         lb_default = ",".join(current_lb_pools)
     elif next_lb_history_ip:

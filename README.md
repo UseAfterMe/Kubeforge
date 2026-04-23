@@ -22,8 +22,8 @@ Ubuntu and Rocky Linux cloud images are both supported.
 - Interactive `configure` flow with curated Ubuntu and Rocky presets
 - VM/IP/VMID planning with subnet validation and safer config guardrails
 - Proxmox-managed NIC MAC addresses by default
-- kube-vip for lightweight multi-control-plane API high availability without a separate HAProxy VM
-- Cilium-native service load balancing without MetalLB
+- kube-vip for lightweight multi-control-plane API high availability
+- Cilium-native service load balancing
 - Automatic kubeconfig fetch, install, and merge into `~/.kube/config`
 - Cluster-aware `destroy` and `upgrade` workflows for multi-cluster workstations
 - Built-in `health` command for fast post-bootstrap validation
@@ -194,7 +194,6 @@ After `apply`:
 - Two or more control planes:
   - kube-vip provides a floating virtual IP for the Kubernetes API
   - Kubernetes API endpoint points at the kube-vip IP
-  - no separate HAProxy VM is required
 
 ## Destroy Behavior
 
