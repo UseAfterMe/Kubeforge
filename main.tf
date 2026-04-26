@@ -69,14 +69,14 @@ resource "local_file" "cluster_ssh_public_key" {
 resource "proxmox_download_file" "cloud_image" {
   for_each = local.proxmox_hosts
 
-  node_name    = each.key
-  datastore_id = var.image_datastore
-  content_type = "iso"
-  file_name    = var.cloud_image_file_name
-  url          = var.cloud_image_url
-  overwrite    = false
+  node_name           = each.key
+  datastore_id        = var.image_datastore
+  content_type        = "iso"
+  file_name           = var.cloud_image_file_name
+  url                 = var.cloud_image_url
+  overwrite           = false
   overwrite_unmanaged = true
-  verify       = !var.proxmox_insecure
+  verify              = !var.proxmox_insecure
 }
 
 resource "proxmox_virtual_environment_file" "cloud_init_user_data" {
@@ -123,6 +123,12 @@ resource "proxmox_virtual_environment_vm" "node" {
     timeout = "1m"
   }
 
+  # The Proxmox provider documents that Debian 12 / Ubuntu cloud images
+  # require a serial socket when the imported boot disk is resized.
+  serial_device {
+    device = "socket"
+  }
+
   cpu {
     type  = "host"
     cores = each.value.cores
@@ -143,12 +149,12 @@ resource "proxmox_virtual_environment_vm" "node" {
     interface    = "virtio0"
     file_id      = proxmox_download_file.cloud_image[each.value.host_node].id
     # Raw is the safest common denominator across Proxmox storage backends.
-    file_format  = "raw"
-    size         = each.value.disk_gb
-    iothread     = true
-    discard      = "on"
-    ssd          = true
-    cache        = "writethrough"
+    file_format = "raw"
+    size        = each.value.disk_gb
+    iothread    = true
+    discard     = "on"
+    ssd         = true
+    cache       = "writethrough"
   }
 
   operating_system {
@@ -186,36 +192,36 @@ resource "local_sensitive_file" "ansible_vars" {
   filename        = "${path.module}/out/ansible-vars.yml"
   file_permission = "0600"
   content = templatefile("${path.module}/templates/ansible-vars.yml.tftpl", {
-    cluster_name              = var.cluster_name
-    os_family                 = var.os_family
-    os_version                = var.os_version
-    kubernetes_version        = var.kubernetes_version
-    kube_version_minor        = local.kube_version_minor
-    kube_package_version      = local.kube_package_version
-    kubernetes_api_ip         = local.kubernetes_api_ip
-    kubernetes_api_dns        = local.kubernetes_api_dns
-    first_control_plane_name  = local.first_control_plane_name
-    first_control_plane_ip    = local.first_control_plane_ip
-    first_control_plane_dns   = local.first_control_plane_dns
-    pod_cidr                  = var.pod_cidr
-    service_cidr              = var.service_cidr
-    control_plane_count       = length(local.control_plane_nodes)
-    kube_vip_ip               = var.kube_vip_ip
-    kube_vip_version          = var.kube_vip_version
-    cilium_chart_version      = var.cilium_chart_version
-    traefik_chart_version     = var.traefik_chart_version
-    install_qemu_guest_agent  = var.install_qemu_guest_agent
-    enable_rocky_cockpit      = var.enable_rocky_cockpit
-    install_proxmox_csi       = var.install_proxmox_csi
-    proxmox_csi_chart_version = var.proxmox_csi_chart_version
-    proxmox_csi_storage       = var.proxmox_csi_storage
-    proxmox_region            = var.proxmox_region
-    proxmox_api_url           = var.proxmox_api_url
-    proxmox_username          = var.proxmox_username
-    proxmox_insecure          = var.proxmox_insecure
-    dns_domain                = local.normalized_dns_domain
-    dns_servers               = var.dns_servers
-    load_balancer_ip_pools    = var.load_balancer_ip_pools
+    cluster_name                   = var.cluster_name
+    os_family                      = var.os_family
+    os_version                     = var.os_version
+    kubernetes_version             = var.kubernetes_version
+    kube_version_minor             = local.kube_version_minor
+    kube_package_version           = local.kube_package_version
+    kubernetes_api_ip              = local.kubernetes_api_ip
+    kubernetes_api_dns             = local.kubernetes_api_dns
+    first_control_plane_name       = local.first_control_plane_name
+    first_control_plane_ip         = local.first_control_plane_ip
+    first_control_plane_dns        = local.first_control_plane_dns
+    pod_cidr                       = var.pod_cidr
+    service_cidr                   = var.service_cidr
+    control_plane_count            = length(local.control_plane_nodes)
+    kube_vip_ip                    = var.kube_vip_ip
+    kube_vip_version               = var.kube_vip_version
+    cilium_chart_version           = var.cilium_chart_version
+    traefik_chart_version          = var.traefik_chart_version
+    install_qemu_guest_agent       = var.install_qemu_guest_agent
+    enable_rocky_cockpit           = var.enable_rocky_cockpit
+    install_proxmox_csi            = var.install_proxmox_csi
+    proxmox_csi_chart_version      = var.proxmox_csi_chart_version
+    proxmox_csi_storage            = var.proxmox_csi_storage
+    proxmox_region                 = var.proxmox_region
+    proxmox_api_url                = var.proxmox_api_url
+    proxmox_username               = var.proxmox_username
+    proxmox_insecure               = var.proxmox_insecure
+    dns_domain                     = local.normalized_dns_domain
+    dns_servers                    = var.dns_servers
+    load_balancer_ip_pools         = var.load_balancer_ip_pools
     cilium_load_balancer_pool_name = var.cilium_load_balancer_pool_name
     cilium_l2_policy_name          = var.cilium_l2_policy_name
   })

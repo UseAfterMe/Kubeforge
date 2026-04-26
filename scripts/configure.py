@@ -47,10 +47,10 @@ DEFAULT_CHART_VERSIONS = {
 OS_IMAGE_PRESETS = {
     "ubuntu": [
         {
-            "label": "Ubuntu 25.04",
-            "version": "25.04",
-            "url": "https://cloud-images.ubuntu.com/plucky/current/plucky-server-cloudimg-amd64.img",
-            "file_name": "plucky-server-cloudimg-amd64.img",
+            "label": "Ubuntu 24.04 LTS",
+            "version": "24.04",
+            "url": "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img",
+            "file_name": "noble-server-cloudimg-amd64.img",
         },
         {
             "label": "Ubuntu 24.10",
@@ -59,10 +59,10 @@ OS_IMAGE_PRESETS = {
             "file_name": "oracular-server-cloudimg-amd64.img",
         },
         {
-            "label": "Ubuntu 24.04",
-            "version": "24.04",
-            "url": "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img",
-            "file_name": "noble-server-cloudimg-amd64.img",
+            "label": "Ubuntu 25.04",
+            "version": "25.04",
+            "url": "https://cloud-images.ubuntu.com/plucky/current/plucky-server-cloudimg-amd64.img",
+            "file_name": "plucky-server-cloudimg-amd64.img",
         },
     ],
     "rocky": [

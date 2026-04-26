@@ -1225,6 +1225,22 @@ print_selected_workspace() {
   log_step "Selected cluster workspace: ${workspace}"
 }
 
+tofu_apply_parallelism_args() {
+  local os_family parallelism
+  os_family="$(read_tfvar os_family)"
+  parallelism="${KUBEFORGE_TOFU_PARALLELISM:-}"
+
+  if [[ -n "${parallelism}" ]]; then
+    printf '%s\n' "-parallelism=${parallelism}"
+    return 0
+  fi
+
+  if [[ "${os_family}" == "ubuntu" ]]; then
+    log_info "Using sequential OpenTofu apply for Ubuntu cloud images to avoid Proxmox worker/lock races."
+    printf '%s\n' "-parallelism=1"
+  fi
+}
+
 print_bootstrap_review() {
   python3 - "${TFVARS_FILE}" <<'PY'
 import json
@@ -2438,12 +2454,14 @@ apply_current_workspace() {
   ensure_tfvars
   tf_init
   local workspace
+  local -a apply_args
   workspace="$(current_workspace_name)"
   select_workspace "${workspace}"
   ensure_local_snippets_dir
   print_selected_workspace "${workspace}"
   print_selected_image
-  tofu apply -var-file="${TFVARS_FILE}" -auto-approve
+  mapfile -t apply_args < <(tofu_apply_parallelism_args)
+  tofu apply "${apply_args[@]}" -var-file="${TFVARS_FILE}" -auto-approve
   snapshot_last_applied_tfvars "${workspace}"
   refresh_kubeconfig_after_apply
 }
@@ -2710,6 +2728,7 @@ case "${ACTION}" in
   apply)
     ensure_tfvars
     tf_init
+    apply_args=()
     workspace="$(current_workspace_name)"
     select_workspace "${workspace}"
     ensure_local_snippets_dir
@@ -2717,7 +2736,8 @@ case "${ACTION}" in
     adopt_cached_cloud_image_if_present "${workspace}"
     print_selected_workspace "${workspace}"
     print_selected_image
-    tofu apply -var-file="${TFVARS_FILE}" -auto-approve "$@"
+    mapfile -t apply_args < <(tofu_apply_parallelism_args)
+    tofu apply "${apply_args[@]}" -var-file="${TFVARS_FILE}" -auto-approve "$@"
     snapshot_last_applied_tfvars "${workspace}"
     refresh_kubeconfig_after_apply
     echo

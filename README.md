@@ -95,6 +95,7 @@ That flow gives you:
 - Applies infrastructure with OpenTofu
 - Downloads the selected cloud image
 - Creates VMs and renders fresh inventory / Ansible vars
+- Uses sequential OpenTofu VM creation for Ubuntu guests by default to avoid Proxmox worker and lock races during cloud-image import and disk resize
 - Refreshes your local kubeconfig from `out/kubeconfig` only when one already exists from a previous successful bootstrap
 
 `bootstrap`
@@ -177,6 +178,8 @@ After `apply`:
 
 - Uses `apt`
 - Uses the configured bootstrap user, default `ubuntu`
+- Recommends Ubuntu 24.04 LTS in the interactive configure flow
+- Adds a serial socket for Ubuntu cloud-image VMs so Proxmox disk resize works reliably during first boot
 - Applies node updates before Kubernetes prep
 
 ### Rocky
@@ -236,6 +239,14 @@ If you changed `terraform.tfvars.json`, run:
 ```bash
 ./deploy.sh apply
 ```
+
+### Ubuntu `apply` fails while creating VMs
+
+If Proxmox reports worker, lock, or boot-disk resize failures while creating Ubuntu VMs:
+
+- retry with the current Kubeforge defaults first
+- prefer Ubuntu 24.04 LTS unless you are actively testing a newer Ubuntu release
+- if a failed run left partial VMs behind, destroy that workspace and apply again
 
 `bootstrap` uses rendered outputs from `out/inventory.yml` and `out/ansible-vars.yml`. It should not run against old rendered data.
 
