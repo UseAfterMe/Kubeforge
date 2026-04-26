@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-output="$(printf '5\n' | "${repo_root}/scripts/install-prereqs.sh" 2>&1)"
+output="$(printf '4\n' | "${repo_root}/scripts/install-prereqs.sh" 2>&1)"
 
 if ! printf '%s\n' "${output}" | grep -q "Kubeforge prerequisite installer"; then
   echo "expected no-arg install-prereqs to show the interactive menu" >&2
@@ -16,8 +16,36 @@ if ! printf '%s\n' "${output}" | grep -q "Install selected tools"; then
   exit 1
 fi
 
+if printf '%s\n' "${output}" | grep -q "Install optional tools"; then
+  echo "did not expect main menu to include broad optional-tool installation" >&2
+  printf '%s\n' "${output}" >&2
+  exit 1
+fi
+
 if printf '%s\n' "${output}" | grep -q "^Usage:"; then
   echo "did not expect no-arg install-prereqs to print usage" >&2
   printf '%s\n' "${output}" >&2
+  exit 1
+fi
+
+selected_output="$(printf '2\nb\n4\n' | "${repo_root}/scripts/install-prereqs.sh" 2>&1)"
+
+if ! printf '%s\n' "${selected_output}" | grep -q "b = back"; then
+  echo "expected selected-tool menu to show b/back help" >&2
+  printf '%s\n' "${selected_output}" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "${selected_output}" | grep -q "q = quit"; then
+  echo "expected selected-tool menu to show q/quit help" >&2
+  printf '%s\n' "${selected_output}" >&2
+  exit 1
+fi
+
+confirm_output="$(printf '2\n1\nn\n4\n' | "${repo_root}/scripts/install-prereqs.sh" 2>&1)"
+
+if ! printf '%s\n' "${confirm_output}" | grep -q "Install selected tools? \\[Y/n\\]"; then
+  echo "expected selected-tool flow to ask for Y/n confirmation" >&2
+  printf '%s\n' "${confirm_output}" >&2
   exit 1
 fi

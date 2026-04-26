@@ -194,7 +194,8 @@ prompt_yes_no() {
 
   while true; do
     local reply lowered
-    read -r -p "${question} [${label}]: " reply
+    printf '%s [%s]: ' "${question}" "${label}"
+    read -r reply
     lowered="$(printf '%s' "${reply}" | tr '[:upper:]' '[:lower:]')"
     if [[ -z "${lowered}" ]]; then
       [[ "${default}" == "true" ]]
@@ -204,7 +205,7 @@ prompt_yes_no() {
       y|yes) return 0 ;;
       n|no) return 1 ;;
     esac
-    echo "Enter yes or no."
+    echo "Enter y or n."
   done
 }
 
@@ -742,7 +743,16 @@ print_selectable_tools() {
     printf '\n'
   done < "${menu_file}"
   echo
-  echo "Enter numbers separated by spaces, or one of: all, missing, required, optional, back."
+  echo "Selections:"
+  echo "  numbers  Install specific tools, for example: 1 7 14"
+  echo "  all      Select every listed tool"
+  echo "  missing  Select missing required and optional tools"
+  echo "  required Select required tools"
+  echo "  optional Select optional tools"
+  echo "  b        Back to main menu"
+  echo "  q        Quit"
+  echo
+  echo "Shortcuts: b = back, q = quit"
 }
 
 number_is_selected() {
@@ -756,19 +766,29 @@ number_is_selected() {
 
 install_selected_tools() {
   local menu_file selection selected_numbers token install_all install_missing install_required install_optional
-  local index group tool matched
+  local index group tool matched selected_file label confirm
   menu_file="$(mktemp)"
+  selected_file="$(mktemp)"
   write_selectable_tools "${menu_file}"
   print_selectable_tools "${menu_file}"
 
-  read -r -p "Selection: " selection || {
+  printf 'Selection [b/q]: '
+  read -r selection || {
+    rm -f "${selected_file}"
     rm -f "${menu_file}"
     return 0
   }
 
   selection="$(printf '%s' "${selection}" | tr '[:upper:]' '[:lower:]')"
   case "${selection}" in
-    ""|back|b|q|quit|exit)
+    ""|back|b)
+      rm -f "${selected_file}"
+      rm -f "${menu_file}"
+      return 0
+      ;;
+    q|quit|exit)
+      INTERACTIVE_MENU_EXIT=true
+      rm -f "${selected_file}"
       rm -f "${menu_file}"
       return 0
       ;;
@@ -795,59 +815,99 @@ install_selected_tools() {
   done
 
   matched=false
+  : > "${selected_file}"
   while IFS=$'\t' read -r index group tool; do
     if [[ "${install_all}" == "true" ]] ||
       [[ "${install_required}" == "true" && "${group}" == "required" ]] ||
       [[ "${install_optional}" == "true" && "${group}" == "optional" ]] ||
       number_is_selected "${selected_numbers}" "${index}"; then
       matched=true
-      install_tool_if_requested "${tool}" || true
+      printf '%s\t%s\t%s\n' "${index}" "${group}" "${tool}" >> "${selected_file}"
     elif [[ "${install_missing}" == "true" ]] && ! tool_installed "${tool}"; then
       matched=true
-      install_tool_if_requested "${tool}" || true
+      printf '%s\t%s\t%s\n' "${index}" "${group}" "${tool}" >> "${selected_file}"
     fi
   done < "${menu_file}"
 
   if [[ "${matched}" != "true" ]]; then
     log_warn "No matching tools selected."
+    rm -f "${selected_file}"
+    rm -f "${menu_file}"
+    return 0
   fi
 
+  echo
+  log_step "Selected tools"
+  while IFS=$'\t' read -r index group tool; do
+    label="$(tool_label "${tool}")"
+    if tool_installed "${tool}"; then
+      printf '  %2s) [installed] %-8s %s\n' "${index}" "${group}" "${label}"
+    else
+      printf '  %2s) [missing]   %-8s %s\n' "${index}" "${group}" "${label}"
+    fi
+  done < "${selected_file}"
+  echo
+
+  while true; do
+    printf 'Install selected tools? [Y/n] (b = back, q = quit): '
+    read -r confirm || confirm="n"
+    confirm="$(printf '%s' "${confirm}" | tr '[:upper:]' '[:lower:]')"
+    case "${confirm}" in
+      ""|y|yes)
+        while IFS=$'\t' read -r index group tool; do
+          install_tool_if_requested "${tool}" || true
+        done < "${selected_file}"
+        break
+        ;;
+      n|no|b|back)
+        break
+        ;;
+      q|quit|exit)
+        INTERACTIVE_MENU_EXIT=true
+        break
+        ;;
+      *)
+        echo "Enter y, n, b, or q."
+        ;;
+    esac
+  done
+
+  rm -f "${selected_file}"
   rm -f "${menu_file}"
 }
 
 interactive_menu() {
   local choice
+  INTERACTIVE_MENU_EXIT=false
   while true; do
+    [[ "${INTERACTIVE_MENU_EXIT}" == "true" ]] && return 0
     echo
     printf '%sKubeforge prerequisite installer%s\n' "${COLOR_BOLD}" "${COLOR_RESET}"
     printf 'Platform: %s\n' "$(platform_label)"
     printf 'Local bin: %s\n' "${LOCAL_BIN}"
     echo
     echo "  1) Install required prerequisites"
-    echo "  2) Install optional tools"
-    echo "  3) Install selected tools"
-    echo "  4) Show status"
-    echo "  5) Exit"
+    echo "  2) Install selected tools"
+    echo "  3) Show status"
+    echo "  4) Exit"
     echo
-    read -r -p "Choose an option [1-5]: " choice || return 0
+    printf 'Choose an option [1-4] (q = quit): '
+    read -r choice || return 0
     case "${choice}" in
       1)
         install_required_tools
         ;;
       2)
-        install_optional_tools
-        ;;
-      3)
         install_selected_tools
         ;;
-      4)
+      3)
         print_all_status
         ;;
-      5|q|quit|exit)
+      4|q|quit|exit)
         return 0
         ;;
       *)
-        echo "Enter a number from 1 to 5."
+        echo "Enter a number from 1 to 4, or q to quit."
         ;;
     esac
   done
