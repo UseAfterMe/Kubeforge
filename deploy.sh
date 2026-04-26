@@ -554,6 +554,47 @@ select_workspace() {
   tofu workspace new "${workspace}" >/dev/null
 }
 
+tofu_workspace_exists() {
+  local workspace="$1"
+  tofu workspace list 2>/dev/null | sed 's/^[* ]*//' | grep -Fx "${workspace}" >/dev/null
+}
+
+print_destroy_workspace_help() {
+  local workspace
+  echo "Tracked cluster workspaces:" >&2
+  while IFS= read -r workspace; do
+    [[ -z "${workspace}" ]] && continue
+    echo "  - ${workspace}: $(describe_workspace "${workspace}")" >&2
+  done < <(list_recorded_workspaces)
+  echo >&2
+  echo "OpenTofu workspaces:" >&2
+  tofu workspace list >&2 || true
+}
+
+validate_destroy_workspace() {
+  local workspace="$1"
+  local state_path root_count workspace_count snapshot_path configured_workspace
+  state_path="$(workspace_state_path "${workspace}")"
+  snapshot_path="$(workspace_last_applied_tfvars_path "${workspace}")"
+  configured_workspace="$(current_workspace_name)"
+  workspace_count="$(state_resource_count "${state_path}")"
+  root_count="$(state_resource_count terraform.tfstate)"
+
+  if [[ -f "${snapshot_path}" || "${workspace_count}" -gt 0 ]]; then
+    return 0
+  fi
+
+  if [[ "${root_count}" -gt 0 && ( "${workspace}" == "default" || "${workspace}" == "${configured_workspace}" ) ]]; then
+    return 0
+  fi
+
+  log_error "No tracked deployment or state resources were found for workspace '${workspace}'."
+  log_error "Destroy expects the Kubeforge/OpenTofu workspace name, not just the Proxmox VM display prefix."
+  echo >&2
+  print_destroy_workspace_help
+  exit 1
+}
+
 snapshot_last_applied_tfvars() {
   local workspace="${1}"
   local target_dir target_path
@@ -2501,8 +2542,13 @@ case "${ACTION}" in
     ensure_tfvars
     tf_init
     destroy_workspace="${DESTROY_WORKSPACE:-$(choose_destroy_workspace)}"
+    validate_destroy_workspace "${destroy_workspace}"
     confirm_destroy_workspace "${destroy_workspace}"
-    select_workspace "${destroy_workspace}"
+    if tofu_workspace_exists "${destroy_workspace}"; then
+      tofu workspace select "${destroy_workspace}" >/dev/null
+    else
+      log_warn "OpenTofu workspace ${destroy_workspace} does not exist locally; using explicit state path only."
+    fi
     local_destroy_tfvars="$(resolve_destroy_tfvars "${destroy_workspace}")"
     destroy_state_arg="$(resolve_destroy_state_args "${destroy_workspace}")"
     if [[ ! -f "${local_destroy_tfvars}" ]]; then

@@ -224,6 +224,36 @@ That allows `destroy` to:
 - remove shared `out/` artifacts only when they belong to the cluster being destroyed
 - preserve the shared bootstrap SSH key in `out/ssh/` by restoring it from another remaining cluster history when appropriate
 
+### Finding the Right Workspace
+
+Kubeforge destroys by OpenTofu workspace name. That is usually the sanitized
+`cluster_name` from `terraform.tfvars.json`, but it is not necessarily the same
+thing you are looking at in the Proxmox VM tree.
+
+Before destroying a cluster, check the local workspaces and current outputs:
+
+```bash
+tofu workspace list
+./deploy.sh output
+```
+
+If more than one tracked cluster exists, `./deploy.sh destroy` prompts you to
+choose one. For non-interactive cleanup, pass the exact workspace name:
+
+```bash
+DESTROY_WORKSPACE=<workspace-name> ./deploy.sh destroy
+```
+
+For example, if `tofu workspace list` shows `demo-ubuntu`, destroy it with:
+
+```bash
+DESTROY_WORKSPACE=demo-ubuntu ./deploy.sh destroy
+```
+
+If you pass a workspace name that has no Kubeforge deployment history or local
+state resources, destroy will stop and print the tracked workspaces instead of
+creating a new empty workspace.
+
 ## Health Checks
 
 Run:
