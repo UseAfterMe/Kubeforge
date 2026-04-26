@@ -75,7 +75,7 @@ resource "proxmox_download_file" "cloud_image" {
   file_name           = var.cloud_image_file_name
   url                 = var.cloud_image_url
   overwrite           = false
-  overwrite_unmanaged = true
+  overwrite_unmanaged = false
   verify              = !var.proxmox_insecure
 }
 

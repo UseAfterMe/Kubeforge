@@ -43,6 +43,7 @@ Required tools:
 - `ssh-keygen`
 - `kubectl`
 - `jq`
+- `openssl`
 
 Optional but recommended local tools:
 
@@ -54,10 +55,20 @@ Optional but recommended local tools:
 - `pvecsictl` for moving local Proxmox CSI volumes between Proxmox nodes
   - pvecsictl requires Go when installed via `go install`
 
-The deployer checks for missing required commands and:
+Install or check prerequisites before deploying:
 
-- prompts to install supported ones automatically when it knows how
-- otherwise prints install hints for the missing tool
+```bash
+./deploy.sh prereqs
+./deploy.sh check-prereqs
+```
+
+The prereq installer:
+
+- detects macOS, Ubuntu, Debian, RHEL, Rocky, and Fedora hosts
+- uses Homebrew, `apt`, or `dnf` where appropriate
+- prompts before installing each required and optional tool
+- installs `kubectl` as a local binary in `~/.local/bin`
+- treats existing installations as valid, so already-prepared workstations are not changed unless you choose to install or update a tool
 
 Supported auto-install prompts use:
 
@@ -68,6 +79,7 @@ Supported auto-install prompts use:
 ## Quick Start
 
 ```bash
+./deploy.sh prereqs
 ./deploy.sh configure
 ./deploy.sh apply
 ./deploy.sh bootstrap
@@ -95,7 +107,6 @@ That flow gives you:
 - Applies infrastructure with OpenTofu
 - Downloads the selected cloud image
 - Creates VMs and renders fresh inventory / Ansible vars
-- Uses sequential OpenTofu VM creation for Ubuntu guests by default to avoid Proxmox worker and lock races during cloud-image import and disk resize
 - Refreshes your local kubeconfig from `out/kubeconfig` only when one already exists from a previous successful bootstrap
 
 `bootstrap`
@@ -124,6 +135,8 @@ That flow gives you:
 ## Commands
 
 ```bash
+./deploy.sh prereqs
+./deploy.sh check-prereqs
 ./deploy.sh configure
 ./deploy.sh plan
 ./deploy.sh apply
@@ -246,6 +259,7 @@ If Proxmox reports worker, lock, or boot-disk resize failures while creating Ubu
 
 - retry with the current Kubeforge defaults first
 - prefer Ubuntu 24.04 LTS unless you are actively testing a newer Ubuntu release
+- set `KUBEFORGE_TOFU_PARALLELISM=1` for the retry if your Proxmox host is still hitting worker or storage-lock races
 - if a failed run left partial VMs behind, destroy that workspace and apply again
 
 `bootstrap` uses rendered outputs from `out/inventory.yml` and `out/ansible-vars.yml`. It should not run against old rendered data.
@@ -316,26 +330,16 @@ If you want a smoother day-to-day operator experience, these are the most useful
 - `pvecsictl` for manual local Proxmox CSI volume moves between Proxmox nodes
   - `pvecsictl` requires Go when installed with `go install`
 
-On macOS:
+Run the prereq installer to add optional tools interactively:
 
 ```bash
-## Follow the official Cilium CLI install instructions:
-## https://docs.cilium.io/en/stable/gettingstarted/k8s-install-default/
-brew install --cask freelens
-brew install kubectx
-brew install k9s
-GOBIN="$HOME/.local/bin" go install github.com/sergelogvinov/proxmox-csi-plugin/cmd/pvecsictl@latest
+./deploy.sh prereqs --optional-only
 ```
 
-On Linux:
-
-- install the `cilium` CLI using the official Cilium install instructions
-- install `kubectx` and `k9s` from your distro package manager when available
-- install `Freelens` from the official DEB, RPM, Flatpak, or Snap packages
-- install `pvecsictl` with Go:
+Kubeforge installs local binaries into `~/.local/bin`. Add it to your shell profile if it is not already in your `PATH`:
 
 ```bash
-GOBIN="$HOME/.local/bin" go install github.com/sergelogvinov/proxmox-csi-plugin/cmd/pvecsictl@latest
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Official project links:

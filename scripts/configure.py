@@ -537,18 +537,12 @@ def shutil_which(command: str) -> str | None:
 
 def print_optional_freelens_hint() -> None:
     print("\nOptional kube manager:")
-    if sys.platform == "darwin" and shutil_which("brew"):
-        print("  Freelens is not installed. You can add it later with: brew install --cask freelens")
-    else:
-        print("  Freelens is not installed. You can add it later from: https://freelensapp.github.io/")
+    print("  Freelens is not installed. You can add optional tools later with: ./deploy.sh prereqs --optional-only")
 
 
 def print_optional_kubectx_hint() -> None:
     print("\nOptional multi-cluster helper:")
-    if sys.platform == "darwin" and shutil_which("brew"):
-        print("  kubectx is not installed. You can add it later with: brew install kubectx")
-    else:
-        print("  kubectx is not installed. You can add it later from: https://github.com/ahmetb/kubectx")
+    print("  kubectx is not installed. You can add optional tools later with: ./deploy.sh prereqs --optional-only")
 
 
 def normalize_proxmox_api_url(raw: str) -> str:

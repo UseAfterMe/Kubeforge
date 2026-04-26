@@ -1,4 +1,21 @@
 ---
+- name: Wait for Rocky SSH to settle before package work
+  ansible.builtin.wait_for_connection:
+    timeout: 600
+    connect_timeout: 10
+    sleep: 5
+
+- name: Wait for Rocky cloud-init to finish
+  ansible.builtin.shell: |
+    if command -v cloud-init >/dev/null 2>&1; then
+      timeout 600 cloud-init status --wait
+    fi
+  args:
+    executable: /bin/bash
+  register: rocky_cloud_init_wait
+  changed_when: false
+  failed_when: false
+
 - name: Configure Rocky resolv.conf from deployer DNS settings
   ansible.builtin.copy:
     dest: /etc/resolv.conf
@@ -20,7 +37,7 @@
         log_file=/var/log/kubeadm-deployer-rocky-update.log
         : > "${log_file}"
         timeout 120 dnf -y makecache --refresh --setopt=timeout=20 --setopt=retries=1 >> "${log_file}" 2>&1
-        timeout 180 dnf -y upgrade --setopt=timeout=20 --setopt=retries=1 >> "${log_file}" 2>&1
+        dnf -y upgrade --setopt=timeout=20 --setopt=retries=1 >> "${log_file}" 2>&1
         if grep -q "Nothing to do." "${log_file}"; then
           echo unchanged
         else
@@ -30,6 +47,8 @@
         executable: /bin/bash
       register: rocky_upgrade_result
       changed_when: "'changed' in rocky_upgrade_result.stdout"
+      async: 1800
+      poll: 15
   rescue:
     - name: Read Rocky update log tail
       ansible.builtin.shell: tail -n 20 /var/log/kubeadm-deployer-rocky-update.log

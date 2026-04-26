@@ -37,10 +37,13 @@ upgrade_workspace=""
 
 TFVARS_FILE="${TFVARS_FILE:-terraform.tfvars.json}"
 OUT_DIR="${OUT_DIR:-out}"
+KUBEFORGE_LOCAL_BIN="${KUBEFORGE_LOCAL_BIN:-${HOME}/.local/bin}"
+PATH="${KUBEFORGE_LOCAL_BIN}:${PATH}"
 DEPLOYMENT_HISTORY_DIR="${OUT_DIR}/deployment-history"
 INVENTORY_PATH="${OUT_DIR}/inventory.yml"
 ANSIBLE_VARS_PATH="${OUT_DIR}/ansible-vars.yml"
 KUBECONFIG_PATH="${OUT_DIR}/kubeconfig"
+PREREQS_SCRIPT="${PREREQS_SCRIPT:-scripts/install-prereqs.sh}"
 PROXMOX_SSH_KEY_PATH="${PROXMOX_SSH_KEY_PATH:-${HOME}/.ssh/id_ed25519}"
 PROXMOX_KEYCHAIN_SERVICE="${PROXMOX_KEYCHAIN_SERVICE:-proxmox-kubeadm-deployer}"
 BOOTSTRAP_SSH_TIMEOUT_SECS="${BOOTSTRAP_SSH_TIMEOUT_SECS:-90}"
@@ -104,135 +107,8 @@ log_item() {
 
 init_colors
 
-platform_id() {
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    printf '%s\n' "macos"
-    return
-  fi
-
-  if [[ -r /etc/os-release ]]; then
-    . /etc/os-release
-    if [[ "${ID_LIKE:-}" == *debian* || "${ID:-}" == "ubuntu" || "${ID:-}" == "debian" ]]; then
-      printf '%s\n' "apt"
-      return
-    fi
-    if [[ "${ID_LIKE:-}" == *rhel* || "${ID_LIKE:-}" == *fedora* || "${ID:-}" == "rocky" || "${ID:-}" == "rhel" || "${ID:-}" == "fedora" ]]; then
-      printf '%s\n' "dnf"
-      return
-    fi
-  fi
-
-  printf '%s\n' "unknown"
-}
-
 print_optional_tool_suggestions() {
-  local platform
-  platform="$(platform_id)"
-
-  echo
-  log_info "Optional tools you might want:"
-  echo
-
-  optional_tool_entry "Cilium CLI" "cilium" "Troubleshoot and inspect Cilium networking and LoadBalancer state." \
-    "https://docs.cilium.io/en/stable/gettingstarted/k8s-install-default/" \
-    "$(optional_tool_install_hint "${platform}" "cilium")"
-  optional_tool_entry "kubectx" "kubectx" "Switch quickly between Kubernetes contexts on multi-cluster workstations." \
-    "https://github.com/ahmetb/kubectx" \
-    "$(optional_tool_install_hint "${platform}" "kubectx")"
-  optional_tool_entry "k9s" "k9s" "Inspect workloads, logs, and events from the terminal." \
-    "https://k9scli.io/" \
-    "$(optional_tool_install_hint "${platform}" "k9s")"
-  optional_tool_entry "Freelens" "freelens" "Desktop Kubernetes UI for cluster inspection." \
-    "https://freelensapp.github.io/" \
-    "$(optional_tool_install_hint "${platform}" "freelens")"
-  optional_tool_entry "pvecsictl" "pvecsictl" "Used to move local Proxmox CSI volumes between Proxmox nodes." \
-    "https://github.com/sergelogvinov/proxmox-csi-plugin" \
-    "$(optional_tool_install_hint "${platform}" "pvecsictl")"
-}
-
-optional_tool_install_hint() {
-  local platform="$1"
-  local tool="$2"
-
-  case "${platform}:${tool}" in
-    macos:cilium)
-      printf '%s\n' "brew install cilium-cli"
-      ;;
-    macos:kubectx)
-      printf '%s\n' "brew install kubectx"
-      ;;
-    macos:k9s)
-      printf '%s\n' "brew install k9s"
-      ;;
-    macos:freelens)
-      printf '%s\n' "brew install --cask freelens"
-      ;;
-    macos:pvecsictl)
-      printf '%s\n' "Prerequisite: Go. Then run: GOBIN=\"${HOME}/.local/bin\" go install github.com/sergelogvinov/proxmox-csi-plugin/cmd/pvecsictl@latest"
-      ;;
-    apt:cilium|dnf:cilium|unknown:cilium)
-      printf '%s\n' "Follow the official Cilium CLI install instructions."
-      ;;
-    apt:kubectx)
-      printf '%s\n' "Install from your distro package manager when available, or use the upstream project."
-      ;;
-    dnf:kubectx|unknown:kubectx)
-      printf '%s\n' "Install from your distro package manager when available, or use the upstream project."
-      ;;
-    apt:k9s|dnf:k9s|unknown:k9s)
-      printf '%s\n' "Install from your distro package manager when available, or use the official project."
-      ;;
-    apt:freelens|dnf:freelens|unknown:freelens)
-      printf '%s\n' "Use the official DEB, RPM, Flatpak, or Snap packages."
-      ;;
-    apt:pvecsictl|dnf:pvecsictl|unknown:pvecsictl)
-      printf '%s\n' "Prerequisite: Go. Then run: GOBIN=\"${HOME}/.local/bin\" go install github.com/sergelogvinov/proxmox-csi-plugin/cmd/pvecsictl@latest"
-      ;;
-    *)
-      printf '%s\n' "See the official project documentation."
-      ;;
-  esac
-}
-
-optional_tool_installed() {
-  local tool="$1"
-
-  case "${tool}" in
-    freelens)
-      if command -v freelens >/dev/null 2>&1 || command -v Freelens >/dev/null 2>&1; then
-        return 0
-      fi
-      [[ -d "/Applications/Freelens.app" || -d "${HOME}/Applications/Freelens.app" ]]
-      ;;
-    *)
-      command -v "${tool}" >/dev/null 2>&1
-      ;;
-  esac
-}
-
-optional_tool_entry() {
-  local label="$1"
-  local command_name="$2"
-  local description="$3"
-  local link="$4"
-  local install_hint="$5"
-  local status_text status_color
-
-  if optional_tool_installed "${command_name}"; then
-    status_text="installed"
-    status_color="${COLOR_GREEN}"
-  else
-    status_text="not installed"
-    status_color="${COLOR_YELLOW}"
-  fi
-
-  if [[ -n "${status_color}" ]]; then
-    log_item "${label}: ${description} [${status_color}${status_text}${COLOR_RESET}]"
-  else
-    log_item "${label}: ${description} [${status_text}]"
-  fi
-  echo "  ${install_hint}"
-  echo "  ${link}"
+  "${PREREQS_SCRIPT}" optional-status || true
 }
 
 prompt_yes_no() {
@@ -259,175 +135,12 @@ prompt_yes_no() {
   done
 }
 
-install_hint() {
-  local command_name="$1"
-  local platform
-  platform="$(platform_id)"
-
-  case "${platform}:${command_name}" in
-    macos:tofu)
-      printf '%s\n' "Install it with: brew install opentofu"
-      ;;
-    macos:freelens)
-      printf '%s\n' "Install it with: brew install --cask freelens"
-      ;;
-    macos:ansible-playbook|macos:ansible-inventory)
-      printf '%s\n' "Install it with: brew install ansible"
-      ;;
-    macos:kubectl)
-      printf '%s\n' "Install it with: brew install kubectl"
-      ;;
-    macos:kubectx)
-      printf '%s\n' "Install it with: brew install kubectx"
-      ;;
-    macos:k9s)
-      printf '%s\n' "Install it with: brew install k9s"
-      ;;
-    macos:pvecsictl)
-      printf '%s\n' "Install it with Go: GOBIN=\"${HOME}/.local/bin\" go install github.com/sergelogvinov/proxmox-csi-plugin/cmd/pvecsictl@latest"
-      ;;
-    macos:jq)
-      printf '%s\n' "Install it with: brew install jq"
-      ;;
-    macos:ssh-copy-id)
-      printf '%s\n' "Install it with: brew install ssh-copy-id"
-      ;;
-    macos:python3)
-      printf '%s\n' "Install it with: brew install python"
-      ;;
-    apt:tofu)
-      printf '%s\n' "Install OpenTofu (`tofu`) using the official OpenTofu apt repository."
-      ;;
-    apt:freelens)
-      printf '%s\n' "Optional: install Freelens using the official DEB package, or use Flatpak/Snap: https://freelensapp.github.io/"
-      ;;
-    apt:ansible-playbook|apt:ansible-inventory)
-      printf '%s\n' "Install it with: sudo apt install -y ansible"
-      ;;
-    apt:kubectl)
-      printf '%s\n' "Install it with: sudo apt install -y kubectl"
-      ;;
-    apt:kubectx)
-      printf '%s\n' "Optional: install it with: sudo apt install -y kubectx"
-      ;;
-    apt:k9s)
-      printf '%s\n' "Optional: install k9s from your preferred package source or https://k9scli.io/"
-      ;;
-    apt:pvecsictl)
-      printf '%s\n' "Optional: install it with Go: GOBIN=\"${HOME}/.local/bin\" go install github.com/sergelogvinov/proxmox-csi-plugin/cmd/pvecsictl@latest"
-      ;;
-    apt:jq)
-      printf '%s\n' "Install it with: sudo apt install -y jq"
-      ;;
-    apt:ssh-copy-id|apt:ssh|apt:ssh-keygen)
-      printf '%s\n' "Install it with: sudo apt install -y openssh-client"
-      ;;
-    apt:python3)
-      printf '%s\n' "Install it with: sudo apt install -y python3"
-      ;;
-    dnf:tofu)
-      printf '%s\n' "Install OpenTofu (`tofu`) using the official OpenTofu dnf repository."
-      ;;
-    dnf:freelens)
-      printf '%s\n' "Optional: install Freelens using the official RPM package, or use Flatpak/Snap: https://freelensapp.github.io/"
-      ;;
-    dnf:ansible-playbook|dnf:ansible-inventory)
-      printf '%s\n' "Install it with: sudo dnf install -y ansible"
-      ;;
-    dnf:kubectl)
-      printf '%s\n' "Install it with: sudo dnf install -y kubectl"
-      ;;
-    dnf:kubectx)
-      printf '%s\n' "Optional: install kubectx from your preferred package source or https://github.com/ahmetb/kubectx"
-      ;;
-    dnf:k9s)
-      printf '%s\n' "Optional: install k9s from your preferred package source or https://k9scli.io/"
-      ;;
-    dnf:pvecsictl)
-      printf '%s\n' "Optional: install it with Go: GOBIN=\"${HOME}/.local/bin\" go install github.com/sergelogvinov/proxmox-csi-plugin/cmd/pvecsictl@latest"
-      ;;
-    dnf:jq)
-      printf '%s\n' "Install it with: sudo dnf install -y jq"
-      ;;
-    dnf:ssh-copy-id|dnf:ssh|dnf:ssh-keygen)
-      printf '%s\n' "Install it with: sudo dnf install -y openssh-clients"
-      ;;
-    dnf:python3)
-      printf '%s\n' "Install it with: sudo dnf install -y python3"
-      ;;
-  esac
-}
-
-install_required_command() {
-  local command_name="$1"
-  local platform
-  platform="$(platform_id)"
-
-  case "${platform}:${command_name}" in
-    macos:tofu)
-      brew install opentofu
-      ;;
-    macos:ansible-playbook|macos:ansible-inventory)
-      brew install ansible
-      ;;
-    macos:kubectl)
-      brew install kubectl
-      ;;
-    macos:jq)
-      brew install jq
-      ;;
-    macos:ssh-copy-id)
-      brew install ssh-copy-id
-      ;;
-    macos:python3)
-      brew install python
-      ;;
-    apt:ansible-playbook|apt:ansible-inventory)
-      sudo apt install -y ansible
-      ;;
-    apt:jq)
-      sudo apt install -y jq
-      ;;
-    apt:ssh-copy-id|apt:ssh|apt:ssh-keygen)
-      sudo apt install -y openssh-client
-      ;;
-    apt:python3)
-      sudo apt install -y python3
-      ;;
-    dnf:ansible-playbook|dnf:ansible-inventory)
-      sudo dnf install -y ansible
-      ;;
-    dnf:jq)
-      sudo dnf install -y jq
-      ;;
-    dnf:ssh-copy-id|dnf:ssh|dnf:ssh-keygen)
-      sudo dnf install -y openssh-clients
-      ;;
-    dnf:python3)
-      sudo dnf install -y python3
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-prompt_install_required_command() {
-  local command_name="$1"
-
-  if [[ ! -t 0 ]]; then
-    return 1
-  fi
-
-  if ! prompt_yes_no "Install missing required command '${command_name}' now?" true; then
-    return 1
-  fi
-
-  if install_required_command "${command_name}"; then
+check_prereqs_upfront() {
+  if [[ "${KUBEFORGE_SKIP_PREREQ_CHECK:-false}" == "true" ]]; then
     return 0
   fi
 
-  return 1
+  "${PREREQS_SCRIPT}" check --required
 }
 
 need() {
@@ -436,19 +149,8 @@ need() {
   fi
 
   echo "Missing required command: $1" >&2
-  local hint
-  hint="$(install_hint "$1" || true)"
-
-  if prompt_install_required_command "$1"; then
-    if command -v "$1" >/dev/null 2>&1; then
-      return 0
-    fi
-    echo "Tried to install '$1', but it is still unavailable in PATH." >&2
-  fi
-
-  if [[ -n "${hint}" ]]; then
-    echo "${hint}" >&2
-  fi
+  "${PREREQS_SCRIPT}" hint "$1" >&2 || true
+  echo "Run ./deploy.sh prereqs before continuing." >&2
   exit 1
 }
 
@@ -1225,19 +927,12 @@ print_selected_workspace() {
   log_step "Selected cluster workspace: ${workspace}"
 }
 
-tofu_apply_parallelism_args() {
-  local os_family parallelism
-  os_family="$(read_tfvar os_family)"
+tofu_apply_parallelism_arg() {
+  local parallelism
   parallelism="${KUBEFORGE_TOFU_PARALLELISM:-}"
 
   if [[ -n "${parallelism}" ]]; then
     printf '%s\n' "-parallelism=${parallelism}"
-    return 0
-  fi
-
-  if [[ "${os_family}" == "ubuntu" ]]; then
-    log_info "Using sequential OpenTofu apply for Ubuntu cloud images to avoid Proxmox worker/lock races."
-    printf '%s\n' "-parallelism=1"
   fi
 }
 
@@ -1357,31 +1052,7 @@ confirm_bootstrap_review() {
   fi
 }
 
-planned_cloud_image_addresses() {
-  python3 - "${TFVARS_FILE}" <<'PY2'
-import json
-import sys
-from pathlib import Path
-
-with Path(sys.argv[1]).open(encoding="utf-8") as handle:
-    data = json.load(handle)
-
-nodes = data.get("nodes", {})
-hosts = sorted({str(node.get("host_node")) for node in nodes.values() if isinstance(node, dict) and node.get("host_node")})
-for host in hosts:
-    print(f'proxmox_download_file.cloud_image["{host}"]')
-PY2
-}
-
-cloud_image_volume_id() {
-  local datastore file_name
-  datastore="$(read_tfvar image_datastore)"
-  file_name="$(read_tfvar cloud_image_file_name)"
-  printf '%s\n' "${datastore}:iso/${file_name}"
-}
-
-cloud_image_exists_on_proxmox() {
-  need python3
+cached_cloud_image_import_targets() {
   python3 - "${TFVARS_FILE}" <<'PY2'
 import json
 import os
@@ -1391,17 +1062,20 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-config = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+with Path(sys.argv[1]).open(encoding="utf-8") as handle:
+    data = json.load(handle)
+
 password = os.environ.get("PROXMOX_PASSWORD") or os.environ.get("TF_VAR_proxmox_password")
 if not password:
     raise SystemExit(1)
 
-api_url = str(config["proxmox_api_url"]).rstrip("/")
-username = str(config["proxmox_username"])
-insecure = bool(config.get("proxmox_insecure", False))
-datastore = str(config["image_datastore"])
-file_name = str(config["cloud_image_file_name"])
-node_names = sorted({str(node.get("host_node")) for node in config.get("nodes", {}).values() if isinstance(node, dict) and node.get("host_node")})
+api_url = str(data["proxmox_api_url"]).rstrip("/")
+username = str(data["proxmox_username"])
+insecure = bool(data.get("proxmox_insecure", False))
+datastore = str(data["image_datastore"])
+file_name = str(data["cloud_image_file_name"])
+nodes = data.get("nodes", {})
+hosts = sorted({str(node.get("host_node")) for node in nodes.values() if isinstance(node, dict) and node.get("host_node")})
 
 context = ssl._create_unverified_context() if insecure else None
 payload = urllib.parse.urlencode({"username": username, "password": password}).encode()
@@ -1409,9 +1083,9 @@ req = urllib.request.Request(f"{api_url}/access/ticket", data=payload, method="P
 with urllib.request.urlopen(req, context=context, timeout=30) as response:
     auth = json.loads(response.read().decode())
 
-data = auth.get("data", {})
-ticket = data.get("ticket")
-csrf = data.get("CSRFPreventionToken")
+auth_data = auth.get("data", {})
+ticket = auth_data.get("ticket")
+csrf = auth_data.get("CSRFPreventionToken")
 if not ticket:
     raise SystemExit(1)
 
@@ -1419,8 +1093,8 @@ headers = {"Cookie": f"PVEAuthCookie={ticket}"}
 if csrf:
     headers["CSRFPreventionToken"] = csrf
 
-for node_name in node_names:
-    req = urllib.request.Request(f"{api_url}/nodes/{node_name}/storage/{datastore}/content", headers=headers)
+for host in hosts:
+    req = urllib.request.Request(f"{api_url}/nodes/{host}/storage/{datastore}/content", headers=headers)
     with urllib.request.urlopen(req, context=context, timeout=30) as response:
         contents = json.loads(response.read().decode()).get("data", [])
     found = False
@@ -1430,29 +1104,48 @@ for node_name in node_names:
             found = True
             break
     if not found:
-        raise SystemExit(1)
-
-raise SystemExit(0)
+        continue
+    address = f'proxmox_download_file.cloud_image["{host}"]'
+    import_id = f"{host}/{datastore}:iso/{file_name}"
+    print(f"{address}\t{import_id}")
 PY2
 }
 
 adopt_cached_cloud_image_if_present() {
   local workspace="$1"
-  local state_path volume_id address
+  local state_path address import_id line targets_file
   state_path="$(workspace_state_path "${workspace}")"
-  volume_id="$(cloud_image_volume_id)"
+  targets_file="$(mktemp)"
 
-  if ! cloud_image_exists_on_proxmox; then
+  if ! cached_cloud_image_import_targets >"${targets_file}"; then
+    rm -f "${targets_file}"
+    log_warn "Could not check Proxmox for cached cloud images; continuing with OpenTofu apply."
     return 0
   fi
 
-  while IFS= read -r address; do
-    [[ -z "${address}" ]] && continue
+  if [[ ! -s "${targets_file}" ]]; then
+    rm -f "${targets_file}"
+    return 0
+  fi
+
+  log_info "Cached cloud image already exists on Proxmox; adopting it into OpenTofu state."
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    address="${line%%$'\t'*}"
+    import_id="${line#*$'\t'}"
     if tofu state list -state="${state_path}" 2>/dev/null | grep -Fx "${address}" >/dev/null; then
       continue
     fi
-    tofu import -state="${state_path}" -var-file="${TFVARS_FILE}" "${address}" "${volume_id}" >/dev/null 2>&1 || true
-  done < <(planned_cloud_image_addresses)
+    if tofu import -state="${state_path}" -var-file="${TFVARS_FILE}" "${address}" "${import_id}" >/dev/null; then
+      log_info "Adopted cached cloud image ${import_id} as ${address}."
+    else
+      log_error "Found cached cloud image ${import_id}, but OpenTofu could not import it as ${address}."
+      log_error "Stopping before apply so Proxmox does not delete or re-download the existing image."
+      rm -f "${targets_file}"
+      exit 1
+    fi
+  done <"${targets_file}"
+  rm -f "${targets_file}"
 }
 
 probe_inventory_ssh_round() {
@@ -2453,15 +2146,18 @@ refresh_kubeconfig_after_bootstrap_if_available() {
 apply_current_workspace() {
   ensure_tfvars
   tf_init
-  local workspace
-  local -a apply_args
+  local workspace parallelism_arg
   workspace="$(current_workspace_name)"
   select_workspace "${workspace}"
   ensure_local_snippets_dir
   print_selected_workspace "${workspace}"
   print_selected_image
-  mapfile -t apply_args < <(tofu_apply_parallelism_args)
-  tofu apply "${apply_args[@]}" -var-file="${TFVARS_FILE}" -auto-approve
+  parallelism_arg="$(tofu_apply_parallelism_arg)"
+  if [[ -n "${parallelism_arg}" ]]; then
+    tofu apply "${parallelism_arg}" -var-file="${TFVARS_FILE}" -auto-approve
+  else
+    tofu apply -var-file="${TFVARS_FILE}" -auto-approve
+  fi
   snapshot_last_applied_tfvars "${workspace}"
   refresh_kubeconfig_after_apply
 }
@@ -2712,6 +2408,20 @@ PY
 }
 
 case "${ACTION}" in
+  prereqs|check-prereqs)
+    ;;
+  configure|plan|apply|bootstrap|upgrade|destroy|output|install-kubeconfig|proxmox-ssh-setup|health)
+    check_prereqs_upfront
+    ;;
+esac
+
+case "${ACTION}" in
+  prereqs)
+    "${PREREQS_SCRIPT}" install "$@"
+    ;;
+  check-prereqs)
+    "${PREREQS_SCRIPT}" check --required --verbose
+    ;;
   configure)
     run_configure "$@"
     ;;
@@ -2728,7 +2438,7 @@ case "${ACTION}" in
   apply)
     ensure_tfvars
     tf_init
-    apply_args=()
+    parallelism_arg=""
     workspace="$(current_workspace_name)"
     select_workspace "${workspace}"
     ensure_local_snippets_dir
@@ -2736,8 +2446,12 @@ case "${ACTION}" in
     adopt_cached_cloud_image_if_present "${workspace}"
     print_selected_workspace "${workspace}"
     print_selected_image
-    mapfile -t apply_args < <(tofu_apply_parallelism_args)
-    tofu apply "${apply_args[@]}" -var-file="${TFVARS_FILE}" -auto-approve "$@"
+    parallelism_arg="$(tofu_apply_parallelism_arg)"
+    if [[ -n "${parallelism_arg}" ]]; then
+      tofu apply "${parallelism_arg}" -var-file="${TFVARS_FILE}" -auto-approve "$@"
+    else
+      tofu apply -var-file="${TFVARS_FILE}" -auto-approve "$@"
+    fi
     snapshot_last_applied_tfvars "${workspace}"
     refresh_kubeconfig_after_apply
     echo
@@ -2814,7 +2528,7 @@ case "${ACTION}" in
     health_checks
     ;;
   *)
-    echo "Usage: ./deploy.sh [configure|plan|apply|bootstrap|upgrade|destroy|output|install-kubeconfig|proxmox-ssh-setup|health]" >&2
+    echo "Usage: ./deploy.sh [prereqs|check-prereqs|configure|plan|apply|bootstrap|upgrade|destroy|output|install-kubeconfig|proxmox-ssh-setup|health]" >&2
     exit 1
     ;;
 esac
