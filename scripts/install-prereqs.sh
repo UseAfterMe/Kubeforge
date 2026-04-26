@@ -44,13 +44,16 @@ log_error() {
 init_colors
 
 usage() {
-  cat <<'EOF'
+  local prog
+  prog="${0#./}"
+  cat <<EOF
 Usage:
-  scripts/install-prereqs.sh install [--required-only|--optional-only]
-  scripts/install-prereqs.sh check [--required] [--verbose]
-  scripts/install-prereqs.sh optional-status
-  scripts/install-prereqs.sh hint <command>
-  scripts/install-prereqs.sh check-command <command>
+  ${prog}
+  ${prog} install [--required-only|--optional-only]
+  ${prog} check [--required] [--verbose]
+  ${prog} optional-status
+  ${prog} hint <command>
+  ${prog} check-command <command>
 
 Environment:
   KUBEFORGE_LOCAL_BIN   Directory for local binaries, default ~/.local/bin
@@ -671,6 +674,21 @@ install_optional_tools() {
   done < <(optional_tools)
 }
 
+print_all_status() {
+  local tool
+  echo
+  log_step "Required prerequisites"
+  while IFS= read -r tool; do
+    [[ -z "${tool}" ]] && continue
+    print_tool_status "${tool}"
+    if ! tool_installed "${tool}"; then
+      printf '    %s\n' "$(install_hint "${tool}")"
+    fi
+  done < <(required_tools)
+
+  print_optional_status
+}
+
 print_optional_status() {
   local tool
   echo
@@ -682,6 +700,157 @@ print_optional_status() {
       printf '    %s\n' "$(install_hint "${tool}")"
     fi
   done < <(optional_tools)
+}
+
+write_selectable_tools() {
+  local output_file="$1"
+  local index=1
+  local tool
+  : > "${output_file}"
+
+  while IFS= read -r tool; do
+    [[ -z "${tool}" ]] && continue
+    printf '%s\trequired\t%s\n' "${index}" "${tool}" >> "${output_file}"
+    index=$((index + 1))
+  done < <(required_tools)
+
+  while IFS= read -r tool; do
+    [[ -z "${tool}" ]] && continue
+    printf '%s\toptional\t%s\n' "${index}" "${tool}" >> "${output_file}"
+    index=$((index + 1))
+  done < <(optional_tools)
+}
+
+print_selectable_tools() {
+  local menu_file="$1"
+  local index group tool label desc status
+
+  echo
+  log_step "Choose prerequisites to install"
+  while IFS=$'\t' read -r index group tool; do
+    label="$(tool_label "${tool}")"
+    desc="$(tool_description "${tool}")"
+    if tool_installed "${tool}"; then
+      status="${COLOR_GREEN}installed${COLOR_RESET}"
+    else
+      status="${COLOR_YELLOW}missing${COLOR_RESET}"
+    fi
+    printf '  %2s) [%s] %-8s %s' "${index}" "${status}" "${group}" "${label}"
+    if [[ -n "${desc}" ]]; then
+      printf ' - %s' "${desc}"
+    fi
+    printf '\n'
+  done < "${menu_file}"
+  echo
+  echo "Enter numbers separated by spaces, or one of: all, missing, required, optional, back."
+}
+
+number_is_selected() {
+  local selected_numbers="$1"
+  local number="$2"
+  case " ${selected_numbers} " in
+    *" ${number} "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+install_selected_tools() {
+  local menu_file selection selected_numbers token install_all install_missing install_required install_optional
+  local index group tool matched
+  menu_file="$(mktemp)"
+  write_selectable_tools "${menu_file}"
+  print_selectable_tools "${menu_file}"
+
+  read -r -p "Selection: " selection || {
+    rm -f "${menu_file}"
+    return 0
+  }
+
+  selection="$(printf '%s' "${selection}" | tr '[:upper:]' '[:lower:]')"
+  case "${selection}" in
+    ""|back|b|q|quit|exit)
+      rm -f "${menu_file}"
+      return 0
+      ;;
+  esac
+
+  selected_numbers=""
+  install_all=false
+  install_missing=false
+  install_required=false
+  install_optional=false
+  for token in ${selection}; do
+    case "${token}" in
+      all) install_all=true ;;
+      missing) install_missing=true ;;
+      required) install_required=true ;;
+      optional) install_optional=true ;;
+      *[!0-9]*)
+        log_warn "Ignoring unknown selection: ${token}"
+        ;;
+      *)
+        selected_numbers="${selected_numbers} ${token}"
+        ;;
+    esac
+  done
+
+  matched=false
+  while IFS=$'\t' read -r index group tool; do
+    if [[ "${install_all}" == "true" ]] ||
+      [[ "${install_required}" == "true" && "${group}" == "required" ]] ||
+      [[ "${install_optional}" == "true" && "${group}" == "optional" ]] ||
+      number_is_selected "${selected_numbers}" "${index}"; then
+      matched=true
+      install_tool_if_requested "${tool}" || true
+    elif [[ "${install_missing}" == "true" ]] && ! tool_installed "${tool}"; then
+      matched=true
+      install_tool_if_requested "${tool}" || true
+    fi
+  done < "${menu_file}"
+
+  if [[ "${matched}" != "true" ]]; then
+    log_warn "No matching tools selected."
+  fi
+
+  rm -f "${menu_file}"
+}
+
+interactive_menu() {
+  local choice
+  while true; do
+    echo
+    printf '%sKubeforge prerequisite installer%s\n' "${COLOR_BOLD}" "${COLOR_RESET}"
+    printf 'Platform: %s\n' "$(platform_label)"
+    printf 'Local bin: %s\n' "${LOCAL_BIN}"
+    echo
+    echo "  1) Install required prerequisites"
+    echo "  2) Install optional tools"
+    echo "  3) Install selected tools"
+    echo "  4) Show status"
+    echo "  5) Exit"
+    echo
+    read -r -p "Choose an option [1-5]: " choice || return 0
+    case "${choice}" in
+      1)
+        install_required_tools
+        ;;
+      2)
+        install_optional_tools
+        ;;
+      3)
+        install_selected_tools
+        ;;
+      4)
+        print_all_status
+        ;;
+      5|q|quit|exit)
+        return 0
+        ;;
+      *)
+        echo "Enter a number from 1 to 5."
+        ;;
+    esac
+  done
 }
 
 install_flow() {
@@ -747,7 +916,10 @@ main() {
       [[ $# -eq 1 ]] || { usage; return 2; }
       tool_installed "$1"
       ;;
-    ""|-h|--help|help)
+    "")
+      interactive_menu
+      ;;
+    -h|--help|help)
       usage
       ;;
     *)
