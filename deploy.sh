@@ -1052,7 +1052,7 @@ confirm_bootstrap_review() {
   fi
 }
 
-cached_cloud_image_import_targets() {
+cloud_image_cache_status() {
   python3 - "${TFVARS_FILE}" <<'PY2'
 import json
 import os
@@ -1103,49 +1103,78 @@ for host in hosts:
         if file_name in haystack:
             found = True
             break
-    if not found:
-        continue
-    address = f'proxmox_download_file.cloud_image["{host}"]'
-    import_id = f"{host}/{datastore}:iso/{file_name}"
-    print(f"{address}\t{import_id}")
+    print(f"{host}\t{'cached' if found else 'missing'}")
 PY2
 }
 
-adopt_cached_cloud_image_if_present() {
+cloud_image_download_var_arg() {
   local workspace="$1"
-  local state_path address import_id line targets_file
+  local state_path line host status status_file total cached missing
   state_path="$(workspace_state_path "${workspace}")"
-  targets_file="$(mktemp)"
 
-  if ! cached_cloud_image_import_targets >"${targets_file}"; then
-    rm -f "${targets_file}"
+  if tofu state list -state="${state_path}" 2>/dev/null | grep -q '^proxmox_download_file\.cloud_image'; then
+    return 0
+  fi
+
+  status_file="$(mktemp)"
+  if ! cloud_image_cache_status >"${status_file}"; then
+    rm -f "${status_file}"
     log_warn "Could not check Proxmox for cached cloud images; continuing with OpenTofu apply."
     return 0
   fi
 
-  if [[ ! -s "${targets_file}" ]]; then
-    rm -f "${targets_file}"
+  total=0
+  cached=0
+  missing=0
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    host="${line%%$'\t'*}"
+    status="${line#*$'\t'}"
+    total=$((total + 1))
+    case "${status}" in
+      cached)
+        cached=$((cached + 1))
+        ;;
+      missing)
+        missing=$((missing + 1))
+        ;;
+      *)
+        log_error "Unexpected cloud image cache status for ${host}: ${status}"
+        rm -f "${status_file}"
+        exit 1
+        ;;
+    esac
+  done <"${status_file}"
+  rm -f "${status_file}"
+
+  if (( total == 0 || cached == 0 )); then
     return 0
   fi
 
-  log_info "Cached cloud image already exists on Proxmox; adopting it into OpenTofu state."
-  while IFS= read -r line; do
-    [[ -z "${line}" ]] && continue
-    address="${line%%$'\t'*}"
-    import_id="${line#*$'\t'}"
-    if tofu state list -state="${state_path}" 2>/dev/null | grep -Fx "${address}" >/dev/null; then
-      continue
-    fi
-    if tofu import -state="${state_path}" -var-file="${TFVARS_FILE}" "${address}" "${import_id}" >/dev/null; then
-      log_info "Adopted cached cloud image ${import_id} as ${address}."
-    else
-      log_error "Found cached cloud image ${import_id}, but OpenTofu could not import it as ${address}."
-      log_error "Stopping before apply so Proxmox does not delete or re-download the existing image."
-      rm -f "${targets_file}"
-      exit 1
-    fi
-  done <"${targets_file}"
-  rm -f "${targets_file}"
+  if (( missing > 0 )); then
+    log_error "Cloud image is cached on ${cached} Proxmox host(s), but missing on ${missing} host(s)."
+    log_error "Refusing to mix unmanaged cached images with a managed download. Cache the image on every target host or remove the partial cached copy."
+    exit 1
+  fi
+
+  log_info "Cached cloud image already exists on Proxmox; reusing it without managing a download resource." >&2
+  printf '%s\n' "-var=cloud_image_download_enabled=false"
+}
+
+run_tofu_apply() {
+  local parallelism_arg="$1"
+  local cloud_image_arg="$2"
+  shift 2
+
+  if [[ -n "${parallelism_arg}" && -n "${cloud_image_arg}" ]]; then
+    tofu apply "${parallelism_arg}" "${cloud_image_arg}" -var-file="${TFVARS_FILE}" -auto-approve "$@"
+  elif [[ -n "${parallelism_arg}" ]]; then
+    tofu apply "${parallelism_arg}" -var-file="${TFVARS_FILE}" -auto-approve "$@"
+  elif [[ -n "${cloud_image_arg}" ]]; then
+    tofu apply "${cloud_image_arg}" -var-file="${TFVARS_FILE}" -auto-approve "$@"
+  else
+    tofu apply -var-file="${TFVARS_FILE}" -auto-approve "$@"
+  fi
 }
 
 probe_inventory_ssh_round() {
@@ -2146,18 +2175,16 @@ refresh_kubeconfig_after_bootstrap_if_available() {
 apply_current_workspace() {
   ensure_tfvars
   tf_init
-  local workspace parallelism_arg
+  local workspace parallelism_arg cloud_image_arg
   workspace="$(current_workspace_name)"
   select_workspace "${workspace}"
   ensure_local_snippets_dir
   print_selected_workspace "${workspace}"
   print_selected_image
+  load_proxmox_password
+  cloud_image_arg="$(cloud_image_download_var_arg "${workspace}")"
   parallelism_arg="$(tofu_apply_parallelism_arg)"
-  if [[ -n "${parallelism_arg}" ]]; then
-    tofu apply "${parallelism_arg}" -var-file="${TFVARS_FILE}" -auto-approve
-  else
-    tofu apply -var-file="${TFVARS_FILE}" -auto-approve
-  fi
+  run_tofu_apply "${parallelism_arg}" "${cloud_image_arg}"
   snapshot_last_applied_tfvars "${workspace}"
   refresh_kubeconfig_after_apply
 }
@@ -2439,19 +2466,16 @@ case "${ACTION}" in
     ensure_tfvars
     tf_init
     parallelism_arg=""
+    cloud_image_arg=""
     workspace="$(current_workspace_name)"
     select_workspace "${workspace}"
     ensure_local_snippets_dir
     load_proxmox_password
-    adopt_cached_cloud_image_if_present "${workspace}"
+    cloud_image_arg="$(cloud_image_download_var_arg "${workspace}")"
     print_selected_workspace "${workspace}"
     print_selected_image
     parallelism_arg="$(tofu_apply_parallelism_arg)"
-    if [[ -n "${parallelism_arg}" ]]; then
-      tofu apply "${parallelism_arg}" -var-file="${TFVARS_FILE}" -auto-approve "$@"
-    else
-      tofu apply -var-file="${TFVARS_FILE}" -auto-approve "$@"
-    fi
+    run_tofu_apply "${parallelism_arg}" "${cloud_image_arg}" "$@"
     snapshot_last_applied_tfvars "${workspace}"
     refresh_kubeconfig_after_apply
     echo

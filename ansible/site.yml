@@ -343,11 +343,15 @@
     - name: Add Helm repositories
       ansible.builtin.shell: |
         set -euo pipefail
-        /usr/local/bin/helm repo add cilium https://helm.cilium.io
-        /usr/local/bin/helm repo add traefik https://traefik.github.io/charts
+        /usr/local/bin/helm repo add --force-update cilium https://helm.cilium.io
+        /usr/local/bin/helm repo add --force-update traefik https://traefik.github.io/charts
         /usr/local/bin/helm repo update
       args:
         executable: /bin/bash
+      register: helm_repo_update_result
+      retries: 5
+      delay: 10
+      until: helm_repo_update_result is succeeded
       changed_when: false
 
     - name: Install Cilium

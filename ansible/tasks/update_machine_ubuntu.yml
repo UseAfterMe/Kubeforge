@@ -26,6 +26,19 @@
       Acquire::http::Timeout "20";
       Acquire::https::Timeout "20";
 
+- name: Recover any interrupted Ubuntu package state
+  ansible.builtin.shell: |
+    set -o pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    export NEEDRESTART_MODE=a
+    export APT_LISTCHANGES_FRONTEND=none
+    dpkg --configure -a
+    apt-get -f install -y
+  args:
+    executable: /bin/bash
+  register: ubuntu_package_recovery
+  changed_when: "'Setting up ' in ubuntu_package_recovery.stdout"
+
 - name: Update Ubuntu system packages before Kubernetes prep
   block:
     - name: Run Ubuntu system update
@@ -33,9 +46,20 @@
         set -o pipefail
         log_file=/var/log/kubeadm-deployer-ubuntu-update.log
         : > "${log_file}"
-        timeout 180 apt-get update >> "${log_file}" 2>&1
-        timeout 180 env DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade >> "${log_file}" 2>&1
-        if grep -q "0 upgraded, 0 newly installed, 0 to remove" "${log_file}"; then
+        export DEBIAN_FRONTEND=noninteractive
+        export NEEDRESTART_MODE=a
+        export APT_LISTCHANGES_FRONTEND=none
+        apt-get update >> "${log_file}" 2>&1
+        if ! upgrade_output="$(apt-get \
+          -o Dpkg::Options::=--force-confdef \
+          -o Dpkg::Options::=--force-confold \
+          -y dist-upgrade 2>&1)"; then
+          printf '%s\n' "${upgrade_output}" >> "${log_file}"
+          exit 1
+        fi
+        printf '%s\n' "${upgrade_output}" >> "${log_file}"
+        upgrade_summary="$(printf '%s\n' "${upgrade_output}" | awk '/^[0-9]+ upgraded, [0-9]+ newly installed, [0-9]+ to remove/ { line = $0 } END { print line }')"
+        if printf '%s\n' "${upgrade_summary}" | grep -Eq '^0 upgraded, 0 newly installed, 0 to remove'; then
           echo unchanged
         else
           echo changed
@@ -43,7 +67,7 @@
       args:
         executable: /bin/bash
       register: ubuntu_upgrade_result
-      changed_when: "'changed' in ubuntu_upgrade_result.stdout"
+      changed_when: "ubuntu_upgrade_result.stdout | trim == 'changed'"
   rescue:
     - name: Read Ubuntu update log tail
       ansible.builtin.shell: tail -n 20 /var/log/kubeadm-deployer-ubuntu-update.log
@@ -53,18 +77,45 @@
       changed_when: false
       failed_when: false
 
-    - name: Warn about Ubuntu update failure and continue
-      ansible.builtin.debug:
-        msg: >-
-          Ubuntu package update failed after retries and will be skipped for this run.
-          Review /var/log/kubeadm-deployer-ubuntu-update.log on the guest for full details.
-          Recent output:
-          {{ ubuntu_update_log_tail.stdout | default('no log output captured') }}
+    - name: Repair Ubuntu package state after update failure
+      ansible.builtin.shell: |
+        set -o pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        export NEEDRESTART_MODE=a
+        export APT_LISTCHANGES_FRONTEND=none
+        dpkg --configure -a
+        apt-get -f install -y
+      args:
+        executable: /bin/bash
+      register: ubuntu_update_repair
+      changed_when: true
 
-    - name: Mark Ubuntu update as skipped
-      ansible.builtin.set_fact:
-        ubuntu_upgrade_result:
-          changed: false
+    - name: Retry Ubuntu system update after package repair
+      ansible.builtin.shell: |
+        set -o pipefail
+        log_file=/var/log/kubeadm-deployer-ubuntu-update.log
+        export DEBIAN_FRONTEND=noninteractive
+        export NEEDRESTART_MODE=a
+        export APT_LISTCHANGES_FRONTEND=none
+        apt-get update >> "${log_file}" 2>&1
+        if ! upgrade_output="$(apt-get \
+          -o Dpkg::Options::=--force-confdef \
+          -o Dpkg::Options::=--force-confold \
+          -y dist-upgrade 2>&1)"; then
+          printf '%s\n' "${upgrade_output}" >> "${log_file}"
+          exit 1
+        fi
+        printf '%s\n' "${upgrade_output}" >> "${log_file}"
+        upgrade_summary="$(printf '%s\n' "${upgrade_output}" | awk '/^[0-9]+ upgraded, [0-9]+ newly installed, [0-9]+ to remove/ { line = $0 } END { print line }')"
+        if printf '%s\n' "${upgrade_summary}" | grep -Eq '^0 upgraded, 0 newly installed, 0 to remove'; then
+          echo unchanged
+        else
+          echo changed
+        fi
+      args:
+        executable: /bin/bash
+      register: ubuntu_upgrade_result
+      changed_when: "ubuntu_upgrade_result.stdout | trim == 'changed'"
 
 - name: Reboot Ubuntu after package updates when needed
   ansible.builtin.reboot:

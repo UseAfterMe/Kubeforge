@@ -1,23 +1,41 @@
 ---
 
-- name: Install base packages
-  ansible.builtin.shell: >-
-    timeout 240 env DEBIAN_FRONTEND=noninteractive
-    apt-get install -y
-    apt-transport-https
-    ca-certificates
-    containerd
-    curl
-    gpg
-    jq
-    nfs-common
-    open-iscsi
-    software-properties-common
-    tar
+- name: Recover interrupted dpkg before base package install
+  ansible.builtin.shell: |
+    set -o pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    export NEEDRESTART_MODE=a
+    export APT_LISTCHANGES_FRONTEND=none
+    dpkg --configure -a
+    apt-get -f install -y
   args:
     executable: /bin/bash
+  register: ubuntu_prepare_package_recovery
+  changed_when: "'Setting up ' in ubuntu_prepare_package_recovery.stdout"
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - containerd
+      - curl
+      - gpg
+      - jq
+      - nfs-common
+      - open-iscsi
+      - software-properties-common
+      - tar
+    state: present
+    update_cache: true
   register: base_packages_result
-  changed_when: "'0 upgraded, 0 newly installed, 0 to remove' not in base_packages_result.stdout"
+  retries: 3
+  delay: 15
+  until: base_packages_result is succeeded
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+    NEEDRESTART_MODE: a
+    APT_LISTCHANGES_FRONTEND: none
 
 - name: Disable swap immediately
   ansible.builtin.command: swapoff -a

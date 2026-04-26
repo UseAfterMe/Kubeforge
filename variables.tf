@@ -160,6 +160,12 @@ variable "cloud_image_file_name" {
   default     = "noble-server-cloudimg-amd64.img"
 }
 
+variable "cloud_image_download_enabled" {
+  description = "Whether OpenTofu should manage the Proxmox cloud image download. Kubeforge disables this at apply time when the image is already cached on Proxmox."
+  type        = bool
+  default     = true
+}
+
 variable "pod_cidr" {
   description = "Pod CIDR"
   type        = string

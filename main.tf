@@ -67,7 +67,7 @@ resource "local_file" "cluster_ssh_public_key" {
 }
 
 resource "proxmox_download_file" "cloud_image" {
-  for_each = local.proxmox_hosts
+  for_each = var.cloud_image_download_enabled ? local.proxmox_hosts : toset([])
 
   node_name           = each.key
   datastore_id        = var.image_datastore
@@ -147,7 +147,7 @@ resource "proxmox_virtual_environment_vm" "node" {
   disk {
     datastore_id = var.vm_datastore
     interface    = "virtio0"
-    file_id      = proxmox_download_file.cloud_image[each.value.host_node].id
+    file_id      = try(proxmox_download_file.cloud_image[each.value.host_node].id, "${var.image_datastore}:iso/${var.cloud_image_file_name}")
     # Raw is the safest common denominator across Proxmox storage backends.
     file_format = "raw"
     size        = each.value.disk_gb
