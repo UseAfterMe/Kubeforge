@@ -629,12 +629,13 @@ check_required_tools() {
 
 install_tool_if_requested() {
   local tool="$1"
+  local allow_reinstall="${2:-false}"
   local label
   label="$(tool_label "${tool}")"
 
   if tool_installed "${tool}"; then
     print_tool_status "${tool}"
-    if [[ "${tool}" == "kubectl" ]]; then
+    if [[ "${allow_reinstall}" == "true" && "${tool}" == "kubectl" ]]; then
       if prompt_yes_no "Install or update Kubeforge-managed kubectl in ${LOCAL_BIN} anyway?" false; then
         install_tool "${tool}"
       fi
@@ -662,7 +663,7 @@ install_required_tools() {
   log_step "Required prerequisites"
   while IFS= read -r tool; do
     [[ -z "${tool}" ]] && continue
-    install_tool_if_requested "${tool}" || true
+    install_tool_if_requested "${tool}" false || true
   done < <(required_tools)
 }
 
@@ -845,7 +846,7 @@ install_selected_tools() {
     case "${confirm}" in
       ""|y|yes)
         while IFS=$'\t' read -r index group tool; do
-          install_tool_if_requested "${tool}" || true
+          install_tool_if_requested "${tool}" true || true
         done < "${selected_file}"
         break
         ;;

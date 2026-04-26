@@ -73,3 +73,11 @@ if ! printf '%s\n' "${confirm_output}" | grep -q "Install selected optional tool
   printf '%s\n' "${confirm_output}" >&2
   exit 1
 fi
+
+required_output="$(printf '1\n4\n' | "${repo_root}/scripts/install-prereqs.sh" 2>&1)"
+
+if printf '%s\n' "${required_output}" | grep -q "Install or update Kubeforge-managed kubectl"; then
+  echo "did not expect required install flow to ask about updating installed kubectl" >&2
+  printf '%s\n' "${required_output}" >&2
+  exit 1
+fi
