@@ -580,12 +580,21 @@ validate_destroy_workspace() {
   workspace_count="$(state_resource_count "${state_path}")"
   root_count="$(state_resource_count terraform.tfstate)"
 
-  if [[ -f "${snapshot_path}" || "${workspace_count}" -gt 0 ]]; then
+  if [[ "${workspace_count}" -gt 0 ]]; then
     return 0
   fi
 
   if [[ "${root_count}" -gt 0 && ( "${workspace}" == "default" || "${workspace}" == "${configured_workspace}" ) ]]; then
     return 0
+  fi
+
+  if [[ -f "${snapshot_path}" ]]; then
+    log_error "Workspace '${workspace}' has deployment history, but its local OpenTofu state has no resources."
+    log_error "Destroy cannot safely remove Proxmox VMs without state ownership."
+    log_error "If VMs still exist in Proxmox, remove them manually after verifying their VM IDs and names."
+    echo >&2
+    print_destroy_workspace_help
+    exit 1
   fi
 
   log_error "No tracked deployment or state resources were found for workspace '${workspace}'."
