@@ -1,4 +1,5 @@
 .ansible/
+.codex/
 .terraform/
 out/
 terraform.tfvars.json
