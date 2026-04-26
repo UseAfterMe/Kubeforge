@@ -711,12 +711,6 @@ write_selectable_tools() {
 
   while IFS= read -r tool; do
     [[ -z "${tool}" ]] && continue
-    printf '%s\trequired\t%s\n' "${index}" "${tool}" >> "${output_file}"
-    index=$((index + 1))
-  done < <(required_tools)
-
-  while IFS= read -r tool; do
-    [[ -z "${tool}" ]] && continue
     printf '%s\toptional\t%s\n' "${index}" "${tool}" >> "${output_file}"
     index=$((index + 1))
   done < <(optional_tools)
@@ -727,7 +721,7 @@ print_selectable_tools() {
   local index group tool label desc status
 
   echo
-  log_step "Choose prerequisites to install"
+  log_step "Choose optional tools to install"
   while IFS=$'\t' read -r index group tool; do
     label="$(tool_label "${tool}")"
     desc="$(tool_description "${tool}")"
@@ -744,11 +738,9 @@ print_selectable_tools() {
   done < "${menu_file}"
   echo
   echo "Selections:"
-  echo "  numbers  Install specific tools, for example: 1 7 14"
-  echo "  all      Select every listed tool"
-  echo "  missing  Select missing required and optional tools"
-  echo "  required Select required tools"
-  echo "  optional Select optional tools"
+  echo "  numbers  Install specific optional tools, for example: 1 4 6"
+  echo "  all      Select every optional tool"
+  echo "  missing  Select missing optional tools"
   echo "  b        Back to main menu"
   echo "  q        Quit"
   echo
@@ -765,14 +757,14 @@ number_is_selected() {
 }
 
 install_selected_tools() {
-  local menu_file selection selected_numbers token install_all install_missing install_required install_optional
+  local menu_file selection selected_numbers token install_all install_missing
   local index group tool matched selected_file label confirm
   menu_file="$(mktemp)"
   selected_file="$(mktemp)"
   write_selectable_tools "${menu_file}"
   print_selectable_tools "${menu_file}"
 
-  printf 'Selection [b/q]: '
+  printf 'Select optional tools (numbers/all/missing, b=back, q=quit): '
   read -r selection || {
     rm -f "${selected_file}"
     rm -f "${menu_file}"
@@ -797,14 +789,14 @@ install_selected_tools() {
   selected_numbers=""
   install_all=false
   install_missing=false
-  install_required=false
-  install_optional=false
   for token in ${selection}; do
     case "${token}" in
       all) install_all=true ;;
       missing) install_missing=true ;;
-      required) install_required=true ;;
-      optional) install_optional=true ;;
+      optional) install_all=true ;;
+      required)
+        log_warn "Required prerequisites are installed from main menu option 1."
+        ;;
       *[!0-9]*)
         log_warn "Ignoring unknown selection: ${token}"
         ;;
@@ -818,8 +810,6 @@ install_selected_tools() {
   : > "${selected_file}"
   while IFS=$'\t' read -r index group tool; do
     if [[ "${install_all}" == "true" ]] ||
-      [[ "${install_required}" == "true" && "${group}" == "required" ]] ||
-      [[ "${install_optional}" == "true" && "${group}" == "optional" ]] ||
       number_is_selected "${selected_numbers}" "${index}"; then
       matched=true
       printf '%s\t%s\t%s\n' "${index}" "${group}" "${tool}" >> "${selected_file}"
@@ -837,7 +827,7 @@ install_selected_tools() {
   fi
 
   echo
-  log_step "Selected tools"
+  log_step "Selected optional tools"
   while IFS=$'\t' read -r index group tool; do
     label="$(tool_label "${tool}")"
     if tool_installed "${tool}"; then
@@ -849,7 +839,7 @@ install_selected_tools() {
   echo
 
   while true; do
-    printf 'Install selected tools? [Y/n] (b = back, q = quit): '
+    printf 'Install selected optional tools? [Y/n] (b = back, q = quit): '
     read -r confirm || confirm="n"
     confirm="$(printf '%s' "${confirm}" | tr '[:upper:]' '[:lower:]')"
     case "${confirm}" in
@@ -887,7 +877,7 @@ interactive_menu() {
     printf 'Local bin: %s\n' "${LOCAL_BIN}"
     echo
     echo "  1) Install required prerequisites"
-    echo "  2) Install selected tools"
+    echo "  2) Install optional tools"
     echo "  3) Show status"
     echo "  4) Exit"
     echo
