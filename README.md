@@ -58,7 +58,7 @@ Optional but recommended local tools:
 Install or check prerequisites before deploying:
 
 ```bash
-./deploy.sh prereqs
+./scripts/install-prereqs.sh
 ./deploy.sh check-prereqs
 ```
 
@@ -66,7 +66,7 @@ The prereq installer:
 
 - detects macOS, Ubuntu, Debian, RHEL, Rocky, and Fedora hosts
 - uses Homebrew, `apt`, or `dnf` where appropriate
-- prompts before installing each required and optional tool
+- opens an interactive menu for required checks, optional-tool selection, and status
 - installs `kubectl` as a local binary in `~/.local/bin`
 - treats existing installations as valid, so already-prepared workstations are not changed unless you choose to install or update a tool
 
@@ -363,7 +363,7 @@ If you want a smoother day-to-day operator experience, these are the most useful
 Run the prereq installer to add optional tools interactively:
 
 ```bash
-./deploy.sh prereqs --optional-only
+./scripts/install-prereqs.sh
 ```
 
 Kubeforge installs local binaries into `~/.local/bin`. Add it to your shell profile if it is not already in your `PATH`:

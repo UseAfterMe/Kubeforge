@@ -537,12 +537,12 @@ def shutil_which(command: str) -> str | None:
 
 def print_optional_freelens_hint() -> None:
     print("\nOptional kube manager:")
-    print("  Freelens is not installed. You can add optional tools later with: ./deploy.sh prereqs --optional-only")
+    print("  Freelens is not installed. You can add optional tools later with: ./scripts/install-prereqs.sh")
 
 
 def print_optional_kubectx_hint() -> None:
     print("\nOptional multi-cluster helper:")
-    print("  kubectx is not installed. You can add optional tools later with: ./deploy.sh prereqs --optional-only")
+    print("  kubectx is not installed. You can add optional tools later with: ./scripts/install-prereqs.sh")
 
 
 def normalize_proxmox_api_url(raw: str) -> str:

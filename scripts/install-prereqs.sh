@@ -63,6 +63,11 @@ EOF
 }
 
 platform_id() {
+  if [[ -n "${KUBEFORGE_TEST_PLATFORM_ID:-}" ]]; then
+    printf '%s\n' "${KUBEFORGE_TEST_PLATFORM_ID}"
+    return
+  fi
+
   if [[ "$(uname -s)" == "Darwin" ]]; then
     printf '%s\n' "macos"
     return
@@ -172,6 +177,9 @@ tool_description() {
 
 tool_installed() {
   local tool="$1"
+  case " ${KUBEFORGE_TEST_FORCE_MISSING_TOOLS:-} " in
+    *" ${tool} "*) return 1 ;;
+  esac
   case "${tool}" in
     freelens)
       command -v freelens >/dev/null 2>&1 ||
@@ -577,6 +585,17 @@ install_tool() {
   esac
 }
 
+tool_auto_install_supported() {
+  case "$(platform_id):$1" in
+    apt:freelens|dnf:freelens)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
 warn_local_bin_path() {
   case ":${PATH}:" in
     *":${LOCAL_BIN}:"*) ;;
@@ -645,6 +664,11 @@ install_tool_if_requested() {
 
   print_tool_status "${tool}"
   echo "    Suggested install: $(install_hint "${tool}")"
+  if ! tool_auto_install_supported "${tool}"; then
+    log_warn "Automatic install is not available for ${label} on $(platform_label)."
+    return 0
+  fi
+
   if prompt_yes_no "Install ${label} now?" true; then
     install_tool "${tool}" || {
       log_warn "Unable to install ${label} automatically."
@@ -757,9 +781,18 @@ number_is_selected() {
   esac
 }
 
+tool_name_is_selected() {
+  local selected_tools="$1"
+  local tool="$2"
+  case " ${selected_tools} " in
+    *" ${tool} "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 install_selected_tools() {
   local menu_file selection selected_numbers token install_all install_missing
-  local index group tool matched selected_file label confirm
+  local selected_tools index group tool matched selected_file label confirm
   menu_file="$(mktemp)"
   selected_file="$(mktemp)"
   write_selectable_tools "${menu_file}"
@@ -788,6 +821,7 @@ install_selected_tools() {
   esac
 
   selected_numbers=""
+  selected_tools=""
   install_all=false
   install_missing=false
   for token in ${selection}; do
@@ -799,7 +833,7 @@ install_selected_tools() {
         log_warn "Required prerequisites are installed from main menu option 1."
         ;;
       *[!0-9]*)
-        log_warn "Ignoring unknown selection: ${token}"
+        selected_tools="${selected_tools} ${token}"
         ;;
       *)
         selected_numbers="${selected_numbers} ${token}"
@@ -811,7 +845,8 @@ install_selected_tools() {
   : > "${selected_file}"
   while IFS=$'\t' read -r index group tool; do
     if [[ "${install_all}" == "true" ]] ||
-      number_is_selected "${selected_numbers}" "${index}"; then
+      number_is_selected "${selected_numbers}" "${index}" ||
+      tool_name_is_selected "${selected_tools}" "${tool}"; then
       matched=true
       printf '%s\t%s\t%s\n' "${index}" "${group}" "${tool}" >> "${selected_file}"
     elif [[ "${install_missing}" == "true" ]] && ! tool_installed "${tool}"; then

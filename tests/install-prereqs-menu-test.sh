@@ -81,3 +81,30 @@ if printf '%s\n' "${required_output}" | grep -q "Install or update Kubeforge-man
   printf '%s\n' "${required_output}" >&2
   exit 1
 fi
+
+freelens_output="$(
+  printf '2\nfreelens\ny\n4\n' |
+    KUBEFORGE_TEST_PLATFORM_ID=apt KUBEFORGE_TEST_FORCE_MISSING_TOOLS=freelens "${repo_root}/scripts/install-prereqs.sh" 2>&1
+)"
+
+if printf '%s\n' "${freelens_output}" | grep -q "Install Freelens now"; then
+  echo "did not expect Linux Freelens flow to prompt for unsupported automatic install" >&2
+  printf '%s\n' "${freelens_output}" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "${freelens_output}" | grep -q "Automatic install is not available for Freelens on Ubuntu/Debian"; then
+  echo "expected Linux Freelens flow to print manual install guidance" >&2
+  printf '%s\n' "${freelens_output}" >&2
+  exit 1
+fi
+
+if ! rg -q "./scripts/install-prereqs.sh" "${repo_root}/scripts/configure.py"; then
+  echo "expected configure hints to point at the interactive prereq installer" >&2
+  exit 1
+fi
+
+if rg -q "prereqs --optional-only" "${repo_root}/scripts/configure.py" "${repo_root}/README.md"; then
+  echo "did not expect docs/configure hints to point at --optional-only" >&2
+  exit 1
+fi
